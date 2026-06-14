@@ -50,6 +50,8 @@ func main() {
 		runGateCmd(args)
 	case "show":
 		runShow(args)
+	case "configure":
+		runConfigureCmd()
 	case "install-hooks":
 		runInstallHooks()
 	case "uninstall-hooks":
@@ -65,12 +67,34 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `wAURden — your guardian for the AUR
 
 Usage:
+  waurden configure          set up an LLM provider (required before first use)
   waurden scan [DIR]         scan package dir (default: .), print report
   waurden gate [DIR]         scan + enforce policy; exit 1 if blocked
   waurden show <pkgname>     print stored DB record for a package
   waurden install-hooks      install makepkg and pacman hooks (requires root)
   waurden uninstall-hooks    remove installed hooks (requires root)
   waurden version            print version`)
+}
+
+func exitUnconfigured(isGate bool) {
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "┌─────────────────────────────────────────────────────────────────┐")
+	fmt.Fprintln(os.Stderr, "│  wAURden: REFUSING TO RUN — NOT CONFIGURED                      │")
+	fmt.Fprintln(os.Stderr, "│                                                                 │")
+	fmt.Fprintln(os.Stderr, "│  No config file found at:                                       │")
+	fmt.Fprintln(os.Stderr, "│    /etc/waurden/config.toml                                     │")
+	fmt.Fprintln(os.Stderr, "│    ~/.config/waurden/config.toml                                │")
+	fmt.Fprintln(os.Stderr, "│                                                                 │")
+	fmt.Fprintln(os.Stderr, "│  Run:  waurden configure                                        │")
+	fmt.Fprintln(os.Stderr, "│  to set up an LLM provider (or static heuristics-only mode).   │")
+	if isGate {
+		fmt.Fprintln(os.Stderr, "│                                                                 │")
+		fmt.Fprintln(os.Stderr, "│  To remove hooks and stop blocking builds:                      │")
+		fmt.Fprintln(os.Stderr, "│    sudo waurden uninstall-hooks                                 │")
+	}
+	fmt.Fprintln(os.Stderr, "└─────────────────────────────────────────────────────────────────┘")
+	fmt.Fprintln(os.Stderr, "")
+	os.Exit(1)
 }
 
 func openDBFromConfig(cfg Config) (*sql.DB, error) {
@@ -83,10 +107,13 @@ func runScan(args []string) {
 		dir = args[0]
 	}
 
-	cfg, err := loadConfig()
+	cfg, configFound, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: config error: %v\n", err)
 		os.Exit(1)
+	}
+	if !configFound {
+		exitUnconfigured(false)
 	}
 
 	pf, err := collectFiles(dir)
@@ -131,10 +158,13 @@ func runGateCmd(args []string) {
 		dir = args[0]
 	}
 
-	cfg, err := loadConfig()
+	cfg, configFound, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: BLOCKING BUILD — config error: %v\n", err)
 		os.Exit(1)
+	}
+	if !configFound {
+		exitUnconfigured(true)
 	}
 
 	pf, err := collectFiles(dir)
@@ -193,7 +223,7 @@ func runShow(args []string) {
 	}
 	pkgname := args[0]
 
-	cfg, err := loadConfig()
+	cfg, _, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: config error: %v\n", err)
 		os.Exit(1)

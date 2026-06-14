@@ -24,7 +24,8 @@ type Config struct {
 	VTKeyEnv    string   `toml:"vt_api_key_env" envconfig:"VT_API_KEY_ENV"`
 }
 
-func loadConfig() (Config, error) {
+// loadConfig returns the merged config, whether any config file was found, and any error.
+func loadConfig() (Config, bool, error) {
 	cfg := Config{
 		Provider: "mock",
 		Timeout:  60,
@@ -45,24 +46,26 @@ func loadConfig() (Config, error) {
 		paths = append(paths, filepath.Join(home, ".config", "waurden", "config.toml"))
 	}
 
+	configFound := false
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return cfg, err
+			return cfg, false, err
 		}
 		if _, err := toml.Decode(string(data), &cfg); err != nil {
-			return cfg, err
+			return cfg, false, err
 		}
+		configFound = true
 	}
 
 	// Environment variables override config file values.
 	// WAURDEN_PROVIDER, WAURDEN_MODEL, WAURDEN_BASE_URL, etc.
 	// Unset vars are left unchanged (no required fields).
 	if err := envconfig.Process("WAURDEN", &cfg); err != nil {
-		return cfg, err
+		return cfg, configFound, err
 	}
 
 	// Expand ~ in DBPath (from config file or env var).
@@ -72,5 +75,5 @@ func loadConfig() (Config, error) {
 		}
 	}
 
-	return cfg, nil
+	return cfg, configFound, nil
 }

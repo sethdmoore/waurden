@@ -10,19 +10,20 @@ import (
 	"time"
 )
 
-// Providers: anthropic, openai (+ base_url for Ollama/OpenRouter/any compat endpoint), mock.
+// Providers: anthropic, openai (+ base_url for Ollama/OpenRouter/any compat endpoint), static.
 // Gemini users: set provider="openai", base_url="https://generativelanguage.googleapis.com/v1beta/openai".
 // Ollama users: set provider="openai", base_url="http://localhost:11434/v1".
+// "static" (alias "mock") runs heuristics only — no LLM, no network calls.
 func callProvider(cfg Config, systemPrompt, userContent string) (string, error) {
 	switch cfg.Provider {
 	case "anthropic":
 		return callAnthropic(cfg, systemPrompt, userContent)
 	case "openai":
 		return callOpenAI(cfg, systemPrompt, userContent)
-	case "mock":
+	case "static", "mock":
 		return callMock(cfg, userContent)
 	default:
-		return "", fmt.Errorf("unknown provider %q (valid: anthropic, openai, mock)", cfg.Provider)
+		return "", fmt.Errorf("unknown provider %q (valid: anthropic, openai, static)", cfg.Provider)
 	}
 }
 

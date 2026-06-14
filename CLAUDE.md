@@ -5,6 +5,8 @@
 
 ## Session continuity
 
+**Never commit.** Do not run `git commit` or `git push` under any circumstances. Only the user commits.
+
 **Always maintain `SUMMARY.md`** in the repo root. It is a 2-paragraph-max plain
 English snapshot of where the project stands: what exists, what was just done, and
 what comes next. Update it at the end of every session that makes meaningful

@@ -26,13 +26,14 @@ type Verdict struct {
 }
 
 var (
-	reCurlPipe  = regexp.MustCompile(`(?i)(curl|wget|fetch)[^\n]*\|[^\n]*(sh|bash|zsh|dash)`)
-	reSSHExfil  = regexp.MustCompile(`(~/\.ssh|\$HOME/\.ssh|~/\.aws|\$HOME/\.aws|~/\.mozilla|\$HOME/\.mozilla|~/\.config/google-chrome|~/\.config/chromium|~/\.gnupg|\$HOME/\.gnupg|~/\.password-store|\$HOME/\.password-store)`)
-	reEvalB64   = regexp.MustCompile(`eval.*base64|eval.*\$\(|base64 -d[^\n]*\|[^\n]*(sh|bash)`)
-	reNpmSusp   = regexp.MustCompile(`npm install [^@\s][^\s]*/[^\s]+`)
-	rePipURL    = regexp.MustCompile(`pip install [^\s]*(http://|https://|git\+)`)
-	reGoInstURL = regexp.MustCompile(`go install [^\s]*(http://|https://)`)
-	reAutostart = regexp.MustCompile(`(~/\.config/autostart|/etc/systemd|~/\.bashrc|\$HOME/\.bashrc|~/\.profile|\$HOME/\.profile|/etc/cron|~/\.config/systemd|\$HOME/\.config/systemd)`)
+	reCurlPipe    = regexp.MustCompile(`(?i)(curl|wget|fetch)[^\n]*\|[^\n]*(sh|bash|zsh|dash)`)
+	reNetworkFetch = regexp.MustCompile(`(?i)\b(curl|wget)\b[^\n]*https?://\S+`)
+	reSSHExfil    = regexp.MustCompile(`(~/\.ssh|\$HOME/\.ssh|~/\.aws|\$HOME/\.aws|~/\.mozilla|\$HOME/\.mozilla|~/\.config/google-chrome|~/\.config/chromium|~/\.gnupg|\$HOME/\.gnupg|~/\.password-store|\$HOME/\.password-store)`)
+	reEvalB64     = regexp.MustCompile(`eval.*base64|eval.*\$\(|base64 -d[^\n]*\|[^\n]*(sh|bash)`)
+	reNpmSusp     = regexp.MustCompile(`npm install [^@\s][^\s]*/[^\s]+`)
+	rePipURL      = regexp.MustCompile(`pip install [^\s]*(http://|https://|git\+)`)
+	reGoInstURL   = regexp.MustCompile(`go install [^\s]*(http://|https://)`)
+	reAutostart   = regexp.MustCompile(`(~/\.config/autostart|/etc/systemd|~/\.bashrc|\$HOME/\.bashrc|~/\.profile|\$HOME/\.profile|/etc/cron|~/\.config/systemd|\$HOME/\.config/systemd)`)
 )
 
 func heuristicCheck(content string) *Verdict {
@@ -51,6 +52,7 @@ func heuristicCheck(content string) *Verdict {
 	}
 
 	check(reCurlPipe, "critical", "curl/wget piped to shell — arbitrary remote code execution")
+	check(reNetworkFetch, "high", "network download (curl/wget) in build script — fetches content not declared in source=()")
 	check(reSSHExfil, "critical", "access to sensitive credential/key directories — possible exfiltration")
 	check(reEvalB64, "critical", "eval of encoded content — obfuscated code execution")
 	check(reNpmSusp, "high", "npm install of package with path-style name — possible typosquatting")
