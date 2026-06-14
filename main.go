@@ -43,7 +43,7 @@ func main() {
 
 	switch cmd {
 	case "version":
-		fmt.Printf("wAURden %s — your guardian for the AUR\n", version)
+		fmt.Printf("wAURden %s\n", version)
 	case "scan":
 		runScan(args)
 	case "gate":
@@ -82,8 +82,8 @@ func exitUnconfigured(isGate bool) {
 	fmt.Fprintln(os.Stderr, "│  wAURden: REFUSING TO RUN — NOT CONFIGURED                      │")
 	fmt.Fprintln(os.Stderr, "│                                                                 │")
 	fmt.Fprintln(os.Stderr, "│  No config file found at:                                       │")
-	fmt.Fprintln(os.Stderr, "│    /etc/waurden/config.toml                                     │")
 	fmt.Fprintln(os.Stderr, "│    ~/.config/waurden/config.toml                                │")
+	fmt.Fprintln(os.Stderr, "│    /etc/waurden/config.toml  (system-wide)                      │")
 	fmt.Fprintln(os.Stderr, "│                                                                 │")
 	fmt.Fprintln(os.Stderr, "│  Run:  waurden configure                                        │")
 	fmt.Fprintln(os.Stderr, "│  to set up an LLM provider (or static heuristics-only mode).   │")
@@ -246,7 +246,6 @@ func runShow(args []string) {
 		os.Exit(0)
 	}
 
-	fmt.Printf("wAURden — your guardian for the AUR\n")
 	fmt.Printf("Package:      %s\n", rec.Name)
 	fmt.Printf("Last Scanned: %s\n", rec.LastScanned)
 	fmt.Printf("Provider:     %s\n", rec.Provider)
@@ -317,7 +316,6 @@ func writeFile(path, content string) error {
 }
 
 func printReport(w *os.File, pkgname string, v Verdict, provider string) {
-	fmt.Fprintln(w, "wAURden — your guardian for the AUR")
 	fmt.Fprintf(w, "Package: %s\n", pkgname)
 	fmt.Fprintf(w, "Verdict: %s (confidence: %.2f)\n", strings.ToUpper(v.Verdict), v.Confidence)
 	fmt.Fprintf(w, "Summary: %s\n", v.Summary)

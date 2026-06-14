@@ -29,35 +29,33 @@ with no prompt-injection risk.
 go build -o waurden .
 sudo cp waurden /usr/local/bin/
 
+# Configure (interactive wizard)
+waurden configure
+
 # Install the makepkg hook (requires root)
 sudo waurden install-hooks
-
-# Configure
-mkdir -p ~/.config/waurden
-cp config/config.example.toml ~/.config/waurden/config.toml
-# Edit ~/.config/waurden/config.toml to set your LLM provider and API key
 ```
 
 ## Configuration
 
+`waurden configure` writes `~/.config/waurden/config.toml` (mode 0600) interactively.
+To configure manually, see `config/config.example.toml`. Key fields:
+
 ```toml
-# ~/.config/waurden/config.toml
-provider = "anthropic"
-model = "claude-haiku-4-5-20251001"
-api_key_env = "ANTHROPIC_API_KEY"
-block_on = ["malicious"]
-warn_on = ["suspicious"]
-on_error = "warn"
-interactive = true
+provider = "anthropic"          # anthropic | openai | static
+model    = "claude-haiku-4-5"
+api_key  = "sk-ant-..."         # stored in the file; chmod 0600 is set automatically
+on_error = "warn"               # warn (allow) | block | allow
 ```
 
-Supported providers: `anthropic`, `openai`, `gemini`, `ollama`, `mock`
-
-For OpenAI-compatible endpoints: set `base_url` (e.g. `http://localhost:11434` for Ollama).
+For OpenAI-compatible endpoints (Ollama, Gemini, OpenRouter): set `provider = "openai"`
+and `base_url = "http://localhost:11434/v1"` (or your endpoint). The `static` provider
+runs heuristics only — no LLM, no network, no API key required.
 
 ## Commands
 
 ```sh
+waurden configure         # Interactive setup wizard (run this first)
 waurden scan [DIR]        # Scan a package dir, print report, store in DB
 waurden gate [DIR]        # Scan + enforce; exits non-zero to abort makepkg
 waurden show <pkgname>    # Show stored verdict for a package
@@ -73,6 +71,23 @@ waurden version
 - **Hardened prompts**: PKGBUILD content is XML-delimited with an injection disclaimer; shell comments are stripped before submission.
 - **Second opinion**: wAURden augments your review, not replaces it. The same PKGBUILD you see is what the LLM analyzes.
 - **Fail-safe default**: `on_error = "warn"` — an unreachable LLM warns loudly but does not block every upgrade.
+
+## Confidence scores
+
+Every verdict includes a `confidence` value (0.00–1.00) indicating how certain the
+analysis is. Interpret it as follows:
+
+| Range | Meaning |
+|-------|---------|
+| 0.90–1.00 | High — strong signal, either from deterministic heuristics or an LLM with clear evidence |
+| 0.70–0.89 | Moderate — findings are plausible but may be context-dependent; review the evidence |
+| 0.50–0.69 | Low — the model is uncertain; treat the verdict as a hint, not a conclusion |
+| 0.00–0.49 | Very low — verdict is unreliable (scan failed, content was ambiguous, or `on_error` fallback) |
+
+Notes:
+- Heuristic matches always report **0.95** — they are deterministic regex matches with no model uncertainty.
+- A `static` (heuristics-only) clean result reports **0.85** — meaning no known-bad patterns were found, but no LLM reasoning was applied.
+- A confidence of **0.00** usually means the scan failed and the verdict reflects your `on_error` policy, not actual analysis.
 
 ## Database
 

@@ -9,19 +9,20 @@ import (
 )
 
 type Config struct {
-	Provider    string   `toml:"provider"       envconfig:"PROVIDER"`
-	Model       string   `toml:"model"          envconfig:"MODEL"`
-	BaseURL     string   `toml:"base_url"       envconfig:"BASE_URL"`
-	APIKeyEnv   string   `toml:"api_key_env"    envconfig:"API_KEY_ENV"`
+	Provider    string   `toml:"provider"        envconfig:"PROVIDER"`
+	Model       string   `toml:"model"           envconfig:"MODEL"`
+	BaseURL     string   `toml:"base_url"        envconfig:"BASE_URL"`
+	APIKey      string   `toml:"api_key"         envconfig:"API_KEY"`
+	APIKeyEnv   string   `toml:"api_key_env"     envconfig:"API_KEY_ENV"`   // fallback: read key from this env var
 	Timeout     int      `toml:"timeout_seconds" envconfig:"TIMEOUT"`
-	DBPath      string   `toml:"db_path"        envconfig:"DB_PATH"`
-	BlockOn     []string `toml:"block_on"       envconfig:"BLOCK_ON"`
-	WarnOn      []string `toml:"warn_on"        envconfig:"WARN_ON"`
-	OnError     string   `toml:"on_error"       envconfig:"ON_ERROR"`
-	Interactive bool     `toml:"interactive"    envconfig:"INTERACTIVE"`
-	DeepSource  bool     `toml:"deep_source"    envconfig:"DEEP_SOURCE"`
-	VirusTotal  bool     `toml:"virustotal"     envconfig:"VIRUSTOTAL"`
-	VTKeyEnv    string   `toml:"vt_api_key_env" envconfig:"VT_API_KEY_ENV"`
+	DBPath      string   `toml:"db_path"         envconfig:"DB_PATH"`
+	BlockOn     []string `toml:"block_on"        envconfig:"BLOCK_ON"`
+	WarnOn      []string `toml:"warn_on"         envconfig:"WARN_ON"`
+	OnError     string   `toml:"on_error"        envconfig:"ON_ERROR"`
+	Interactive bool     `toml:"interactive"     envconfig:"INTERACTIVE"`
+	DeepSource  bool     `toml:"deep_source"     envconfig:"DEEP_SOURCE"`
+	VirusTotal  bool     `toml:"virustotal"      envconfig:"VIRUSTOTAL"`
+	VTKeyEnv    string   `toml:"vt_api_key_env"  envconfig:"VT_API_KEY_ENV"`
 }
 
 // loadConfig returns the merged config, whether any config file was found, and any error.

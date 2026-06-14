@@ -63,10 +63,23 @@ func postJSON(client *http.Client, url string, headers map[string]string, body i
 	return respBody, nil
 }
 
+func resolveAPIKey(cfg Config) (string, error) {
+	if cfg.APIKey != "" {
+		return cfg.APIKey, nil
+	}
+	if cfg.APIKeyEnv != "" {
+		if v := os.Getenv(cfg.APIKeyEnv); v != "" {
+			return v, nil
+		}
+		return "", fmt.Errorf("api_key not set in config and env var %q is empty", cfg.APIKeyEnv)
+	}
+	return "", fmt.Errorf("no api_key in config and no api_key_env specified")
+}
+
 func callAnthropic(cfg Config, systemPrompt, userContent string) (string, error) {
-	apiKey := os.Getenv(cfg.APIKeyEnv)
-	if apiKey == "" {
-		return "", fmt.Errorf("API key env var %q not set", cfg.APIKeyEnv)
+	apiKey, err := resolveAPIKey(cfg)
+	if err != nil {
+		return "", err
 	}
 	base := "https://api.anthropic.com"
 	if cfg.BaseURL != "" {
@@ -113,9 +126,9 @@ func callAnthropic(cfg Config, systemPrompt, userContent string) (string, error)
 }
 
 func callOpenAI(cfg Config, systemPrompt, userContent string) (string, error) {
-	apiKey := os.Getenv(cfg.APIKeyEnv)
-	if apiKey == "" {
-		return "", fmt.Errorf("API key env var %q not set", cfg.APIKeyEnv)
+	apiKey, err := resolveAPIKey(cfg)
+	if err != nil {
+		return "", err
 	}
 	base := "https://api.openai.com/v1"
 	if cfg.BaseURL != "" {
