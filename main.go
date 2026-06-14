@@ -1,0 +1,309 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strings"
+)
+
+const version = "0.1.0"
+
+const makepkgHook = `# Installed by wAURden. Scans the PKGBUILD in the current directory before
+# makepkg builds it, and aborts the build on a malicious verdict.
+if [ -f "$PWD/PKGBUILD" ] && command -v waurden >/dev/null 2>&1; then
+    waurden gate "$PWD" || {
+        echo "wAURden: refusing to build this package (see findings above)" >&2
+        exit 1
+    }
+fi
+`
+
+const pacmanHook = `[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = wAURden: scanning package install scriptlets...
+When = PreTransaction
+Exec = /usr/bin/waurden gate
+`
+
+func main() {
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	cmd := os.Args[1]
+	args := os.Args[2:]
+
+	switch cmd {
+	case "version":
+		fmt.Printf("wAURden %s — your guardian for the AUR\n", version)
+	case "scan":
+		runScan(args)
+	case "gate":
+		runGateCmd(args)
+	case "show":
+		runShow(args)
+	case "install-hooks":
+		runInstallHooks()
+	case "uninstall-hooks":
+		runUninstallHooks()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Fprintln(os.Stderr, `wAURden — your guardian for the AUR
+
+Usage:
+  waurden scan [DIR]         scan package dir (default: .), print report
+  waurden gate [DIR]         scan + enforce policy; exit 1 if blocked
+  waurden show <pkgname>     print stored DB record for a package
+  waurden install-hooks      install makepkg and pacman hooks (requires root)
+  waurden uninstall-hooks    remove installed hooks (requires root)
+  waurden version            print version`)
+}
+
+func openDBFromConfig(cfg Config) (*sql.DB, error) {
+	return openDB(cfg.DBPath)
+}
+
+func runScan(args []string) {
+	dir := "."
+	if len(args) > 0 {
+		dir = args[0]
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	pf, err := collectFiles(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: %v\n", err)
+		os.Exit(1)
+	}
+
+	db, err := openDBFromConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	var existing *DBRecord
+	if pf.Name != "unknown" {
+		existing, _ = lookupRecord(db, pf.Name)
+	}
+	aurInfo := fetchAURInfo(pf.PkgBase, cfg.Timeout)
+	pkgbuildChanged := existing != nil && existing.PKGBUILDHash != "" && existing.PKGBUILDHash != pf.Hash
+	printAURWarnings(pf.Name, existing, pkgbuildChanged, aurInfo)
+
+	v, err := analyze(cfg, db, pf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: scan error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if pf.Name != "unknown" {
+		if err := storeMaintainer(db, pf.Name, aurInfo.Maintainer); err != nil {
+			fmt.Fprintf(os.Stderr, "wAURden: db maintainer update error: %v\n", err)
+		}
+	}
+
+	printReport(os.Stdout, pf.Name, v, cfg.Provider)
+}
+
+func runGateCmd(args []string) {
+	dir := "."
+	if len(args) > 0 {
+		dir = args[0]
+	}
+
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: BLOCKING BUILD — config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	pf, err := collectFiles(dir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: %v\n", err)
+		if cfg.OnError == "block" {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	db, err := openDBFromConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db error: %v\n", err)
+		if cfg.OnError == "block" {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	defer db.Close()
+
+	var existing *DBRecord
+	if pf.Name != "unknown" {
+		existing, _ = lookupRecord(db, pf.Name)
+	}
+	aurInfo := fetchAURInfo(pf.PkgBase, cfg.Timeout)
+	pkgbuildChanged := existing != nil && existing.PKGBUILDHash != "" && existing.PKGBUILDHash != pf.Hash
+	printAURWarnings(pf.Name, existing, pkgbuildChanged, aurInfo)
+
+	v, blocked, err := runGate(cfg, db, pf)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: gate error: %v\n", err)
+		if cfg.OnError == "block" {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	if pf.Name != "unknown" {
+		if err := storeMaintainer(db, pf.Name, aurInfo.Maintainer); err != nil {
+			fmt.Fprintf(os.Stderr, "wAURden: db maintainer update error: %v\n", err)
+		}
+	}
+
+	printReport(os.Stderr, pf.Name, v, cfg.Provider)
+
+	if blocked {
+		os.Exit(1)
+	}
+}
+
+func runShow(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "wAURden: show requires a package name")
+		os.Exit(1)
+	}
+	pkgname := args[0]
+
+	cfg, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	db, err := openDBFromConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	rec, err := lookupRecord(db, pkgname)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db lookup error: %v\n", err)
+		os.Exit(1)
+	}
+	if rec == nil {
+		fmt.Printf("No record found for package: %s\n", pkgname)
+		os.Exit(0)
+	}
+
+	fmt.Printf("wAURden — your guardian for the AUR\n")
+	fmt.Printf("Package:      %s\n", rec.Name)
+	fmt.Printf("Last Scanned: %s\n", rec.LastScanned)
+	fmt.Printf("Provider:     %s\n", rec.Provider)
+	fmt.Printf("Verdict:      %s (confidence: %.2f)\n", strings.ToUpper(rec.Verdict), rec.Confidence)
+	fmt.Printf("Analysis:     %s\n", rec.SourceAnalyzed)
+	fmt.Printf("\nSummary: %s\n", rec.Summary)
+
+	if rec.Findings != "" && rec.Findings != "null" {
+		var findings []Finding
+		if err := json.Unmarshal([]byte(rec.Findings), &findings); err == nil && len(findings) > 0 {
+			fmt.Printf("\nFindings:\n")
+			for _, f := range findings {
+				fmt.Printf("  [%s] file: %s\n", strings.ToUpper(f.Severity), f.File)
+				fmt.Printf("    %s\n", f.Detail)
+				if f.Evidence != "" {
+					fmt.Printf("    → %s\n", f.Evidence)
+				}
+			}
+		}
+	}
+}
+
+func runInstallHooks() {
+	if os.Getuid() != 0 {
+		fmt.Fprintln(os.Stderr, "wAURden: install-hooks requires root. Re-run with sudo.")
+		os.Exit(1)
+	}
+
+	// Only the makepkg hook is installed — it fires before PKGBUILD is sourced.
+	// The pacman hook (hooks/pacman/waurden.hook) is a future-work placeholder.
+	path := "/etc/makepkg.conf.d/00-waurden.conf"
+	if err := writeFile(path, makepkgHook); err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Installed: %s\n", path)
+	fmt.Println("wAURden hooks installed.")
+}
+
+func runUninstallHooks() {
+	if os.Getuid() != 0 {
+		fmt.Fprintln(os.Stderr, "wAURden: uninstall-hooks requires root. Re-run with sudo.")
+		os.Exit(1)
+	}
+
+	path := "/etc/makepkg.conf.d/00-waurden.conf"
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Not found (skipping): %s\n", path)
+		} else {
+			fmt.Fprintf(os.Stderr, "wAURden: cannot remove %s: %v\n", path, err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Printf("Removed: %s\n", path)
+	}
+	fmt.Println("wAURden hooks uninstalled.")
+}
+
+func writeFile(path, content string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(content)
+	return err
+}
+
+func printReport(w *os.File, pkgname string, v Verdict, provider string) {
+	fmt.Fprintln(w, "wAURden — your guardian for the AUR")
+	fmt.Fprintf(w, "Package: %s\n", pkgname)
+	fmt.Fprintf(w, "Verdict: %s (confidence: %.2f)\n", strings.ToUpper(v.Verdict), v.Confidence)
+	fmt.Fprintf(w, "Summary: %s\n", v.Summary)
+
+	if len(v.Findings) > 0 {
+		fmt.Fprintln(w, "\nFindings:")
+		for _, f := range v.Findings {
+			fmt.Fprintf(w, "  [%s] file: %s\n", strings.ToUpper(f.Severity), f.File)
+			fmt.Fprintf(w, "    %s\n", f.Detail)
+			if f.Evidence != "" {
+				fmt.Fprintf(w, "    → %s\n", f.Evidence)
+			}
+		}
+	}
+
+	if provider != "" {
+		fmt.Fprintf(w, "\nProvider: %s\n", provider)
+	}
+}

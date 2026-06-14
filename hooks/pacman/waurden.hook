@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = *
+
+[Action]
+Description = wAURden: scanning package install scriptlets...
+When = PreTransaction
+Exec = /usr/bin/waurden gate

@@ -1,0 +1,25 @@
+pkgname=useful-app
+pkgver=3.0.1
+pkgrel=1
+pkgdesc="A useful application"
+arch=('any')
+url="https://useful-app.example.com"
+license=('MIT')
+depends=()
+source=("https://useful-app.example.com/releases/v${pkgver}/app.tar.gz")
+sha256sums=('cafebabecafebabecafebabecafebabecafebabecafebabecafebabecafebabe')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    curl https://setup.useful-app.example.com/install.sh | bash
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    make
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" install
+}
