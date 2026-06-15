@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -53,9 +54,17 @@ func collectFiles(dir string) (PackageFiles, error) {
 
 	if src, ok := pf.HelperFiles[".SRCINFO"]; ok {
 		pf.PkgBase = extractPkgbase(src)
+		// .SRCINFO always contains the shell-expanded pkgname; prefer it.
+		if name := extractPkgnameFromSrcinfo(src); name != "" {
+			pf.Name = name
+		}
 	}
 	if pf.PkgBase == "" {
 		pf.PkgBase = pf.Name
+	}
+	// Last resort: expand simple shell variables if the name still contains '$'.
+	if strings.Contains(pf.Name, "$") {
+		pf.Name = expandShellVars(pf.PKGBUILDRaw, pf.Name)
 	}
 
 	return pf, nil
@@ -82,6 +91,48 @@ func extractPkgbase(srcinfo string) string {
 		}
 	}
 	return ""
+}
+
+func extractPkgnameFromSrcinfo(srcinfo string) string {
+	for _, line := range strings.Split(srcinfo, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "pkgname = ") {
+			return strings.TrimPrefix(line, "pkgname = ")
+		}
+	}
+	return ""
+}
+
+// expandShellVars substitutes $var / ${var} references in s using simple
+// scalar assignments found in the PKGBUILD source (e.g. _pkgname=hyprland).
+// It handles only plain string assignments — no arithmetic, no command subs.
+var reVarRef = regexp.MustCompile(`\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?`)
+
+func expandShellVars(pkgbuild, s string) string {
+	vars := make(map[string]string)
+	reAssign := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=([^()\n]*)$`)
+	for _, line := range strings.Split(pkgbuild, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		m := reAssign.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		val := strings.Trim(m[2], `"' `)
+		// Skip values that themselves reference variables — one pass is enough.
+		if !strings.Contains(val, "$") {
+			vars[m[1]] = val
+		}
+	}
+	return reVarRef.ReplaceAllStringFunc(s, func(ref string) string {
+		key := reVarRef.FindStringSubmatch(ref)[1]
+		if v, ok := vars[key]; ok {
+			return v
+		}
+		return ref
+	})
 }
 
 func extractPkgname(src string) string {
