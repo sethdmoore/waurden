@@ -1,46 +1,63 @@
 # wAURden configuration
 # Copy to ~/.config/waurden/config.toml or /etc/waurden/config.toml
+# Run 'waurden configure' to generate this file interactively.
 
-# LLM provider: anthropic, openai, mock
-# For Ollama: provider="openai", base_url="http://localhost:11434/v1"
-# For Gemini: provider="openai", base_url="https://generativelanguage.googleapis.com/v1beta/openai"
-provider = "mock"
+# LLM provider to use for PKGBUILD analysis.
+# Values: anthropic, openai, static
+#   anthropic — Anthropic Claude API
+#   openai    — OpenAI or any OpenAI-compatible endpoint (OpenRouter, Ollama,
+#               Gemini, LM Studio, etc.) — set base_url accordingly
+#   static    — heuristic pattern matching only, no LLM, no API key needed
+provider = "static"
 
-# Model name (provider-specific)
-# model = "claude-haiku-4-5"
-# model = "gpt-4o-mini"
-# model = "llama3"
+# Model name (provider-specific).
+# Examples:
+#   meta-llama/llama-3.3-70b-instruct:free  (OpenRouter free tier)
+#   claude-haiku-4-5                         (Anthropic)
+#   gpt-4o-mini                              (OpenAI)
+#   llama3.2                                 (Ollama)
+# model = "meta-llama/llama-3.3-70b-instruct:free"
 
-# Base URL override (for Ollama, OpenRouter, local endpoints)
-# base_url = "http://localhost:11434/v1"
+# Base URL for OpenAI-compatible endpoints (leave unset for native OpenAI).
+# Examples:
+#   OpenRouter: https://openrouter.ai/api/v1
+#   Ollama:     http://localhost:11434/v1
+#   Gemini:     https://generativelanguage.googleapis.com/v1beta/openai
+#   LM Studio:  http://localhost:1234/v1
+# base_url = "https://openrouter.ai/api/v1"
 
-# Environment variable holding the API key
-# api_key_env = "ANTHROPIC_API_KEY"
+# API key for the provider.
+# Use api_key to store the key directly in this file (mode 0600),
+# or use api_key_env to name an environment variable that holds the key.
+# api_key = "sk-or-..."
+# api_key_env = "OPENROUTER_API_KEY"
 
-# Request timeout in seconds
+# Request timeout in seconds.
 timeout_seconds = 60
 
-# Database path (default: ~/.local/share/waurden/waurden.db)
+# Database path (default: ~/.local/share/waurden/waurden.db).
 # db_path = "~/.local/share/waurden/waurden.db"
 
-# Verdicts that abort the build (used by `gate`)
+# Verdicts that abort the build (used by 'waurden gate' / the makepkg hook).
+# Possible verdict values: ok, suspicious, malicious
 block_on = ["malicious"]
 
-# Verdicts that print a warning but allow the build
+# Verdicts that print a warning but allow the build to continue.
 warn_on = ["suspicious"]
 
-# What to do when the scan itself fails (LLM unreachable, parse error, etc.)
-# warn  = allow the build but print a warning (default, recommended)
-# block = abort the build on any scan failure (strict mode)
-# allow = silently allow the build on failure
+# What to do when the scan itself fails (LLM unreachable, parse error, etc.).
+# warn  — allow the build but print a warning (default; recommended for most users)
+# block — abort the build on any scan failure (strict / high-security mode)
+# allow — silently allow the build on failure
 on_error = "warn"
 
-# Prompt for user confirmation on a TTY before blocking
+# On a TTY, prompt the user to override a block verdict before aborting.
+# Set to true if you want to manually review and accept flagged packages.
 interactive = false
 
-# Enable upstream git diff analysis for -git packages (priority 3 feature)
+# Enable upstream git diff analysis for -git packages (priority 3 feature, not yet implemented).
 deep_source = false
 
-# Enable VirusTotal scanning for binary packages
+# Enable VirusTotal scanning for binary packages (priority 3 feature, not yet implemented).
 virustotal = false
 # vt_api_key_env = "VT_API_KEY"
