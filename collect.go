@@ -17,6 +17,9 @@ type PackageFiles struct {
 	PKGBUILDSrc string
 	Hash        string
 	HelperFiles map[string]string
+	// KnownCommitters holds the merged JSON set of git author emails, staged by
+	// trackNewCommitters and persisted via storeVerdict/upsertRecord.
+	KnownCommitters string
 }
 
 func collectFiles(dir string) (PackageFiles, error) {

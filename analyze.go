@@ -241,18 +241,19 @@ func storeVerdict(cfg Config, db *sql.DB, pf PackageFiles, v Verdict, diff strin
 	}
 
 	return upsertRecord(db, DBRecord{
-		Name:           pf.Name,
-		LastScanned:    time.Now().UTC().Format(time.RFC3339),
-		PKGBUILDHash:   pf.Hash,
-		PKGBUILDText:   pf.PKGBUILDRaw,
-		HelperFiles:    string(helperJSON),
-		SourceHashes:   "{}",
-		Diff:           diff,
-		Verdict:        v.Verdict,
-		Confidence:     v.Confidence,
-		Summary:        v.Summary,
-		Findings:       string(findingsJSON),
-		SourceAnalyzed: v.SourceAnalyzed,
-		Provider:       providerStr,
+		Name:            pf.Name,
+		LastScanned:     time.Now().UTC().Format(time.RFC3339),
+		PKGBUILDHash:    pf.Hash,
+		PKGBUILDText:    pf.PKGBUILDRaw,
+		HelperFiles:     string(helperJSON),
+		SourceHashes:    "{}",
+		Diff:            diff,
+		Verdict:         v.Verdict,
+		Confidence:      v.Confidence,
+		Summary:         v.Summary,
+		Findings:        string(findingsJSON),
+		SourceAnalyzed:  v.SourceAnalyzed,
+		Provider:        providerStr,
+		KnownCommitters: pf.KnownCommitters,
 	})
 }

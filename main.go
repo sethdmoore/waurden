@@ -140,19 +140,13 @@ func runScan(args []string) {
 		existing, _ = lookupRecord(db, pf.Name)
 	}
 	aurInfo := fetchAURInfo(pf.PkgBase, cfg.Timeout)
-	pkgbuildChanged := existing != nil && existing.PKGBUILDHash != "" && existing.PKGBUILDHash != pf.Hash
-	printAURWarnings(pf.Name, existing, pkgbuildChanged, aurInfo)
+	printAURWarnings(pf.Name, aurInfo)
+	trackNewCommitters(&pf, existing)
 
 	v, err := analyze(cfg, db, pf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: scan error: %v\n", err)
 		os.Exit(1)
-	}
-
-	if pf.Name != "unknown" {
-		if err := storeMaintainer(db, pf.Name, aurInfo.Maintainer); err != nil {
-			fmt.Fprintf(os.Stderr, "wAURden: db maintainer update error: %v\n", err)
-		}
 	}
 
 	printReport(os.Stdout, pf.Name, v, cfg.Provider)
@@ -197,8 +191,8 @@ func runGateCmd(args []string) {
 		existing, _ = lookupRecord(db, pf.Name)
 	}
 	aurInfo := fetchAURInfo(pf.PkgBase, cfg.Timeout)
-	pkgbuildChanged := existing != nil && existing.PKGBUILDHash != "" && existing.PKGBUILDHash != pf.Hash
-	printAURWarnings(pf.Name, existing, pkgbuildChanged, aurInfo)
+	printAURWarnings(pf.Name, aurInfo)
+	trackNewCommitters(&pf, existing)
 
 	v, blocked, err := runGate(cfg, db, pf)
 	if err != nil {
@@ -207,12 +201,6 @@ func runGateCmd(args []string) {
 			os.Exit(1)
 		}
 		os.Exit(0)
-	}
-
-	if pf.Name != "unknown" {
-		if err := storeMaintainer(db, pf.Name, aurInfo.Maintainer); err != nil {
-			fmt.Fprintf(os.Stderr, "wAURden: db maintainer update error: %v\n", err)
-		}
 	}
 
 	// Scan failures (LLM unreachable, parse error, etc.) take a separate display

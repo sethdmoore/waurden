@@ -25,7 +25,9 @@ type DBRecord struct {
 	SourceAnalyzed string
 	Provider       string
 	Maintainer     string
-	PrevMaintainer string
+	// KnownCommitters is a JSON []string of git author emails seen across all
+	// prior scans of this package. See trackNewCommitters.
+	KnownCommitters string
 }
 
 const schema = `
@@ -44,7 +46,8 @@ CREATE TABLE IF NOT EXISTS packages (
     source_analyzed  TEXT,
     provider         TEXT,
     maintainer       TEXT,
-    prev_maintainer  TEXT
+    prev_maintainer  TEXT,
+    known_committers TEXT
 );`
 
 func openDB(path string) (*sql.DB, error) {
@@ -70,6 +73,7 @@ func migrateColumns(db *sql.DB) error {
 	alters := []string{
 		`ALTER TABLE packages ADD COLUMN maintainer TEXT`,
 		`ALTER TABLE packages ADD COLUMN prev_maintainer TEXT`,
+		`ALTER TABLE packages ADD COLUMN known_committers TEXT`,
 	}
 	for _, stmt := range alters {
 		if _, err := db.Exec(stmt); err != nil {
@@ -87,14 +91,14 @@ func lookupRecord(db *sql.DB, name string) (*DBRecord, error) {
 		COALESCE(helper_files,''), COALESCE(source_hashes,''), COALESCE(diff,''),
 		COALESCE(verdict,''), COALESCE(confidence,0), COALESCE(summary,''),
 		COALESCE(findings,''), COALESCE(source_analyzed,''), COALESCE(provider,''),
-		COALESCE(maintainer,''), COALESCE(prev_maintainer,'')
+		COALESCE(maintainer,''), COALESCE(known_committers,'')
 		FROM packages WHERE name = ?`, name)
 
 	var r DBRecord
 	err := row.Scan(&r.Name, &r.LastScanned, &r.PKGBUILDHash, &r.PKGBUILDText,
 		&r.HelperFiles, &r.SourceHashes, &r.Diff, &r.Verdict, &r.Confidence,
 		&r.Summary, &r.Findings, &r.SourceAnalyzed, &r.Provider,
-		&r.Maintainer, &r.PrevMaintainer)
+		&r.Maintainer, &r.KnownCommitters)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -104,22 +108,11 @@ func lookupRecord(db *sql.DB, name string) (*DBRecord, error) {
 	return &r, nil
 }
 
-func storeMaintainer(db *sql.DB, pkgname string, maintainer *string) error {
-	var val interface{}
-	if maintainer != nil {
-		val = *maintainer
-	}
-	_, err := db.Exec(
-		`UPDATE packages SET prev_maintainer = maintainer, maintainer = ? WHERE name = ?`,
-		val, pkgname)
-	return err
-}
-
 func upsertRecord(db *sql.DB, r DBRecord) error {
 	_, err := db.Exec(`INSERT INTO packages (name, last_scanned, pkgbuild_hash,
 		pkgbuild_text, helper_files, source_hashes, diff, verdict, confidence,
-		summary, findings, source_analyzed, provider)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+		summary, findings, source_analyzed, provider, known_committers)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 		last_scanned=excluded.last_scanned,
 		pkgbuild_hash=excluded.pkgbuild_hash,
@@ -132,9 +125,10 @@ func upsertRecord(db *sql.DB, r DBRecord) error {
 		summary=excluded.summary,
 		findings=excluded.findings,
 		source_analyzed=excluded.source_analyzed,
-		provider=excluded.provider`,
+		provider=excluded.provider,
+		known_committers=excluded.known_committers`,
 		r.Name, r.LastScanned, r.PKGBUILDHash, r.PKGBUILDText,
 		r.HelperFiles, r.SourceHashes, r.Diff, r.Verdict, r.Confidence,
-		r.Summary, r.Findings, r.SourceAnalyzed, r.Provider)
+		r.Summary, r.Findings, r.SourceAnalyzed, r.Provider, r.KnownCommitters)
 	return err
 }

@@ -147,7 +147,11 @@ func innerText(s string) string {
 	return strings.TrimSpace(sb.String())
 }
 
-func printAURWarnings(pkgname string, existing *DBRecord, pkgbuildChanged bool, info AURInfo) {
+// printAURWarnings emits orphan / new-account / inactive-account warnings from
+// AUR metadata. Maintainer-change detection has been removed in favour of git
+// committer tracking (see trackNewCommitters), which avoids the false positives
+// caused by legitimate co-maintainers temporarily holding the primary slot.
+func printAURWarnings(pkgname string, info AURInfo) {
 	if info.LastModified == 0 {
 		// No AUR data — network failure or package not in AUR; skip warnings.
 		return
@@ -159,14 +163,6 @@ func printAURWarnings(pkgname string, existing *DBRecord, pkgbuildChanged bool, 
 	}
 
 	maintainer := *info.Maintainer
-
-	if existing != nil && existing.Maintainer != "" && existing.Maintainer != maintainer {
-		fmt.Fprintf(os.Stderr, "wAURden WARNING: maintainer changed for %s: %q → %q.\n",
-			pkgname, existing.Maintainer, maintainer)
-		if pkgbuildChanged {
-			fmt.Fprintf(os.Stderr, "wAURden WARNING: maintainer changed AND PKGBUILD changed — elevated risk.\n")
-		}
-	}
 
 	if mi := info.MaintainerInfo; mi != nil {
 		if !mi.RegisteredAt.IsZero() {
