@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -296,6 +297,22 @@ func configExistsAnywhere() bool {
 	return err == nil
 }
 
+// hookStatus returns "missing", "ok", or "outdated" by comparing the installed
+// file's sha256 against the expected content.
+func hookStatus(path, expected string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "missing"
+		}
+		return "outdated"
+	}
+	if sha256.Sum256(data) == sha256.Sum256([]byte(expected)) {
+		return "ok"
+	}
+	return "outdated"
+}
+
 func runInstallHooks() {
 	if os.Getuid() != 0 {
 		fmt.Fprintln(os.Stderr, "wAURden: install-hooks requires root. Re-run with sudo.")
@@ -311,12 +328,26 @@ func runInstallHooks() {
 	// Only the makepkg hook is installed — it fires before PKGBUILD is sourced.
 	// The pacman hook (hooks/pacman/waurden.hook) is a future-work placeholder.
 	path := "/etc/makepkg.conf.d/00-waurden.conf"
-	if err := writeFile(path, makepkgHook); err != nil {
-		fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", path, err)
-		os.Exit(1)
+	status := hookStatus(path, makepkgHook)
+	switch status {
+	case "ok":
+		fmt.Printf("Up to date: %s\n", path)
+		fmt.Println("wAURden hooks are already up to date.")
+	case "missing":
+		if err := writeFile(path, makepkgHook); err != nil {
+			fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Installed: %s\n", path)
+		fmt.Println("wAURden hooks installed.")
+	case "outdated":
+		if err := writeFile(path, makepkgHook); err != nil {
+			fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		fmt.Printf("Updated (was out of date): %s\n", path)
+		fmt.Println("wAURden hooks updated.")
 	}
-	fmt.Printf("Installed: %s\n", path)
-	fmt.Println("wAURden hooks installed.")
 }
 
 func runUninstallHooks() {
