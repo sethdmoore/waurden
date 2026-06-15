@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -25,40 +24,19 @@ type Verdict struct {
 	SourceAnalyzed string    `json:"source_analyzed"`
 }
 
-var (
-	reCurlPipe    = regexp.MustCompile(`(?i)(curl|wget|fetch)[^\n]*\|[^\n]*(sh|bash|zsh|dash)`)
-	reNetworkFetch = regexp.MustCompile(`(?i)\b(curl|wget)\b[^\n]*https?://\S+`)
-	reSSHExfil    = regexp.MustCompile(`(~/\.ssh|\$HOME/\.ssh|~/\.aws|\$HOME/\.aws|~/\.mozilla|\$HOME/\.mozilla|~/\.config/google-chrome|~/\.config/chromium|~/\.gnupg|\$HOME/\.gnupg|~/\.password-store|\$HOME/\.password-store)`)
-	reEvalB64     = regexp.MustCompile(`eval.*base64|eval.*\$\(|base64 -d[^\n]*\|[^\n]*(sh|bash)`)
-	reNpmSusp     = regexp.MustCompile(`npm install [^@\s][^\s]*/[^\s]+`)
-	rePipURL      = regexp.MustCompile(`pip install [^\s]*(http://|https://|git\+)`)
-	reGoInstURL   = regexp.MustCompile(`go install [^\s]*(http://|https://)`)
-	reAutostart   = regexp.MustCompile(`(~/\.config/autostart|/etc/systemd|~/\.bashrc|\$HOME/\.bashrc|~/\.profile|\$HOME/\.profile|/etc/cron|~/\.config/systemd|\$HOME/\.config/systemd)`)
-)
-
 func heuristicCheck(content string) *Verdict {
 	var findings []Finding
 
-	check := func(re *regexp.Regexp, severity, detail string) {
-		matches := re.FindAllString(content, -1)
-		for _, m := range matches {
+	for _, p := range activePatterns {
+		for _, m := range p.re.FindAllString(content, -1) {
 			findings = append(findings, Finding{
-				Severity: severity,
+				Severity: p.severity,
 				File:     "PKGBUILD",
-				Detail:   detail,
+				Detail:   p.detail,
 				Evidence: m,
 			})
 		}
 	}
-
-	check(reCurlPipe, "critical", "curl/wget piped to shell — arbitrary remote code execution")
-	check(reNetworkFetch, "high", "network download (curl/wget) in build script — fetches content not declared in source=()")
-	check(reSSHExfil, "critical", "access to sensitive credential/key directories — possible exfiltration")
-	check(reEvalB64, "critical", "eval of encoded content — obfuscated code execution")
-	check(reNpmSusp, "high", "npm install of package with path-style name — possible typosquatting")
-	check(rePipURL, "high", "pip install from URL — arbitrary code execution via pip")
-	check(reGoInstURL, "high", "go install from URL — arbitrary code execution via go")
-	check(reAutostart, "high", "writing to autostart/systemd/profile — persistence mechanism")
 
 	if len(findings) == 0 {
 		return nil

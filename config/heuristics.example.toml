@@ -1,0 +1,28 @@
+# wAURden additional heuristics
+#
+# Place this file at ~/.config/waurden/heuristics.toml (user) or
+# /etc/waurden/heuristics.toml (system-wide). Patterns here are merged
+# with the built-in set — they do not replace it.
+#
+# Each [[pattern]] block requires:
+#   regex    — Go regular expression (RE2 syntax)
+#   severity — one of: info, low, medium, high, critical
+#   detail   — human-readable description shown in findings
+
+# Example: flag any use of dd writing to a block device
+[[pattern]]
+regex = "\\bdd\\b[^\\n]*(of=/dev/[a-z])"
+severity = "critical"
+detail = "dd writing to block device — possible disk wipe"
+
+# Example: flag python -c one-liners (common obfuscation vector)
+[[pattern]]
+regex = "python[23]?\\s+-c\\s+['\"]"
+severity = "medium"
+detail = "python -c one-liner — possible obfuscated execution"
+
+# Example: flag use of socat/netcat for reverse shells
+[[pattern]]
+regex = "\\b(nc|ncat|socat)\\b[^\\n]*(exec|bash|sh)"
+severity = "high"
+detail = "netcat/socat exec — possible reverse shell"

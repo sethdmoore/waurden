@@ -31,41 +31,69 @@ func runConfigureCmd() {
 
 	fmt.Println("wAURden needs an LLM provider to analyze PKGBUILDs.")
 	fmt.Println("Choose a provider:")
-	fmt.Println("  1) Anthropic Claude (recommended — claude-haiku-4-5 is fast and cheap)")
-	fmt.Println("  2) OpenAI (GPT-4o-mini or similar)")
-	fmt.Println("  3) OpenAI-compatible endpoint (Ollama, Gemini, OpenRouter, etc.)")
-	fmt.Println("  4) Static — heuristics only, no LLM (limited protection, no API key needed)")
+	fmt.Println("  1) OpenRouter       — one API key, hundreds of models (recommended)")
+	fmt.Println("  2) Ollama           — local models, free, no API key needed")
+	fmt.Println("  3) Anthropic Claude — if you have an Anthropic API key")
+	fmt.Println("  4) OpenAI           — if you have an OpenAI API key")
+	fmt.Println("  5) Other OpenAI-compatible endpoint (Gemini, LM Studio, etc.)")
+	fmt.Println("  6) Static           — heuristics only, no LLM, no API key needed")
 	fmt.Println()
 
-	choice := promptChoice("Provider", []string{"1", "2", "3", "4"}, "1")
+	choice := promptChoice("Provider", []string{"1", "2", "3", "4", "5", "6"}, "1")
 
 	var provider, model, baseURL, apiKey string
 
 	switch choice {
 	case "1":
+		provider = "openai"
+		baseURL = "https://openrouter.ai/api/v1"
+		fmt.Println()
+		fmt.Println("OpenRouter gives you access to Claude, GPT, Llama, Mistral and more")
+		fmt.Println("through a single API key. Free-tier models are available at no cost.")
+		fmt.Println()
+		fmt.Println("Get your API key at: https://openrouter.ai/keys")
+		fmt.Println()
+		fmt.Println("Suggested models:")
+		fmt.Println("  meta-llama/llama-3.3-70b-instruct:free  (free, strong)")
+		fmt.Println("  anthropic/claude-haiku-4-5               (cheap, fast)")
+		fmt.Println("  google/gemini-flash-1.5                  (cheap, fast)")
+		model = promptString("Model", "meta-llama/llama-3.3-70b-instruct:free")
+		fmt.Println()
+		apiKey = promptSecret("OpenRouter API key")
+	case "2":
+		provider = "openai"
+		baseURL = "http://localhost:11434/v1"
+		fmt.Println()
+		fmt.Println("Ollama runs models locally — no API key, no cost, fully private.")
+		fmt.Println("Make sure Ollama is running: ollama serve")
+		fmt.Println()
+		fmt.Println("Suggested models (pull first with 'ollama pull <model>'):")
+		fmt.Println("  llama3.2   mistral   gemma3")
+		model = promptString("Model", "llama3.2")
+		apiKey = ""
+	case "3":
 		provider = "anthropic"
 		model = promptString("Model", "claude-haiku-4-5")
 		fmt.Println()
 		fmt.Println("Get your API key at: https://console.anthropic.com/settings/keys")
 		apiKey = promptSecret("Anthropic API key")
-	case "2":
+	case "4":
 		provider = "openai"
 		model = promptString("Model", "gpt-4o-mini")
 		fmt.Println()
 		fmt.Println("Get your API key at: https://platform.openai.com/api-keys")
 		apiKey = promptSecret("OpenAI API key")
-	case "3":
+	case "5":
 		provider = "openai"
 		fmt.Println()
 		fmt.Println("Examples:")
-		fmt.Println("  Ollama (local):  http://localhost:11434/v1")
-		fmt.Println("  Gemini:          https://generativelanguage.googleapis.com/v1beta/openai")
-		fmt.Println("  OpenRouter:      https://openrouter.ai/api/v1")
-		baseURL = promptString("Base URL", "http://localhost:11434/v1")
-		model = promptString("Model name", "llama3")
+		fmt.Println("  Gemini:    https://generativelanguage.googleapis.com/v1beta/openai")
+		fmt.Println("  LM Studio: http://localhost:1234/v1")
+		baseURL = promptString("Base URL", "")
+		model = promptString("Model name", "")
 		fmt.Println()
-		apiKey = promptSecret("API key (leave blank if none, e.g. local Ollama)")
-	case "4":
+		apiKey = promptSecret("API key (leave blank if none)")
+	case "6":
 		provider = "static"
 		fmt.Println()
 		fmt.Println("Static mode: heuristic pattern matching only, no LLM calls.")
@@ -117,7 +145,7 @@ func runConfigureCmd() {
 
 	fmt.Printf("Configuration written to %s\n", configPath)
 	if provider == "static" {
-		fmt.Println("NOTE: static mode uses heuristics only. Re-run 'waurden configure' to set up an LLM provider.")
+		fmt.Println("NOTE: static mode uses heuristics only. Run 'waurden configure' again to set up an LLM provider.")
 	}
 }
 

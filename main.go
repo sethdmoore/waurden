@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 )
 
@@ -37,6 +39,8 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+
+	initHeuristics()
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
@@ -268,9 +272,39 @@ func runShow(args []string) {
 	}
 }
 
+// configExistsAnywhere checks for a valid config file, accounting for the fact
+// that install-hooks runs as root but the config belongs to the invoking user.
+func configExistsAnywhere() bool {
+	if _, err := os.Stat("/etc/waurden/config.toml"); err == nil {
+		return true
+	}
+	home := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil {
+			home = u.HomeDir
+		}
+	}
+	if home == "" {
+		if h, err := os.UserHomeDir(); err == nil {
+			home = h
+		}
+	}
+	if home == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(home, ".config", "waurden", "config.toml"))
+	return err == nil
+}
+
 func runInstallHooks() {
 	if os.Getuid() != 0 {
 		fmt.Fprintln(os.Stderr, "wAURden: install-hooks requires root. Re-run with sudo.")
+		os.Exit(1)
+	}
+	if !configExistsAnywhere() {
+		fmt.Fprintln(os.Stderr, "wAURden: no configuration found — refusing to install hooks.")
+		fmt.Fprintln(os.Stderr, "Run 'waurden configure' as the user who will be building packages,")
+		fmt.Fprintln(os.Stderr, "then re-run 'sudo waurden install-hooks'.")
 		os.Exit(1)
 	}
 
