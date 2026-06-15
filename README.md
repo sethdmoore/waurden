@@ -10,6 +10,12 @@ compromised account) can inject credential-stealing code — exfiltrating `~/.ss
 browser data — that runs silently during `makepkg`. AUR helpers show you a diff, but most
 users skim or auto-confirm it.
 
+In June 2026, the ["Atomic Arch" supply-chain campaign](https://archlinux.org/news/active-aur-malicious-packages-incident/)
+compromised 400–1,500 AUR packages by claiming ownership of orphaned packages and injecting
+`npm install atomic-lockfile` into their PKGBUILDs — delivering an eBPF rootkit and
+credential stealer to anyone who built the affected packages. Arch's official repositories
+([core], [extra], [multilib]) were unaffected; only AUR packages were targeted.
+
 ## How it works
 
 wAURden intercepts `makepkg` at the earliest possible point: when it sources
@@ -19,8 +25,8 @@ never runs. Works with any AUR helper (yay, paru, aurutils, pikaur) and bare `ma
 
 Before calling the LLM, wAURden runs fast local heuristics (curl-pipe-bash, ssh/aws
 exfiltration, eval of encoded payloads, suspicious package installs). These catch the
-exact patterns from the [2023 AUR incident](https://archlinux.org/news/) deterministically,
-with no prompt-injection risk.
+exact patterns from the [June 2026 "Atomic Arch" campaign](https://archlinux.org/news/active-aur-malicious-packages-incident/)
+deterministically, with no prompt-injection risk.
 
 ## Install
 
@@ -115,7 +121,7 @@ waurden version
 
 wAURden checks the AUR RPC on every scan and warns when:
 
-- The package is **orphaned** (no maintainer) — a key precondition of the 2023 incident
+- The package is **orphaned** (no maintainer) — a key precondition of the June 2026 "Atomic Arch" attack
 - The **maintainer changed** since the last scan — flagged as elevated risk if the PKGBUILD also changed
 - The maintainer account is **new** (registered <30 days ago)
 - The maintainer account is **Inactive**

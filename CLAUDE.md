@@ -5,6 +5,12 @@
 
 ## Session continuity
 
+**Always pull before changing files.** At the start of every session, run
+`git pull github` before editing any files. The user applies patches via
+`git am` and pushes them to GitHub; the local working tree may be behind.
+Editing stale files risks producing a patch that conflicts with changes already
+on the remote.
+
 **Never commit.** Do not run `git commit` or `git push` under any circumstances. Only the user commits.
 
 **Exception — patch generation only:** To produce a `git format-patch` file (which the
@@ -30,11 +36,13 @@ state without re-reading this entire file.
 
 ## 1. Problem & motivation
 
-An AUR security incident occurred in which a malicious bot claimed ownership of
-~2,000 "orphan" AUR packages. Many of those packages had their `PKGBUILD`s
-compromised with credential-stealing commits — e.g. a line like
-`npm install atomic/credstealer-rootkit` injected into a build function, or
-`curl … | bash`, exfiltration of `~/.ssh`, `~/.aws`, browser data, etc.
+In June 2026, the ["Atomic Arch" supply-chain campaign](https://archlinux.org/news/active-aur-malicious-packages-incident/)
+compromised 400–1,500 AUR packages by claiming ownership of orphaned packages through
+the AUR's standard adoption process and injecting `npm install atomic-lockfile` (and
+a second package, `js-digest`) into their PKGBUILDs — delivering an eBPF rootkit and
+credential stealer to anyone who built the affected packages. The attackers also forged
+commit metadata to impersonate a known AUR maintainer ("arojas"). Arch's official
+repositories ([core], [extra], [multilib]) were unaffected; only AUR packages were targeted.
 
 The danger is that AUR `PKGBUILD`s execute **arbitrary shell code at build time**
 on the user's machine. Helpers (yay, paru, …) show a diff but most users skim or
@@ -97,7 +105,7 @@ For an AUR package the full sequence is:
    a. makepkg sources `/etc/makepkg.conf`, then `/etc/makepkg.conf.d/*.conf`
    b. makepkg sources the `PKGBUILD` (top-level code runs here; functions defined)
    c. makepkg calls `prepare()` / `build()` / `package()`
-      — **this is where `npm install …/credstealer` and `curl … | bash` execute**
+      — **this is where `npm install atomic-lockfile` and `curl … | bash` execute**
 3. helper runs `pacman -U built.pkg.tar.zst` → **pacman hooks fire here**
 
 A pacman `PreTransaction` hook only sees the *already-built* package. The
@@ -540,8 +548,8 @@ type MaintainerInfo struct {
 - `Status` is `Inactive` → warn
 
 These combine with the orphan/maintainer-change signals to paint a complete picture.
-The registration-date check directly targets the incident's attack vector: a bot
-registered a fresh account and claimed ~2,000 orphan packages within days.
+The registration-date check directly targets the incident's attack vector: the Atomic Arch
+attacker registered a fresh account and claimed hundreds of orphaned packages within days.
 
 ### Warnings to surface
 
