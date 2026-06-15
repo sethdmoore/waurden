@@ -200,7 +200,7 @@ Both calls are non-fatal on network failure.
 
 **Warning signals (stderr, both `scan` and `gate`):**
 1. Orphan → `WARNING: <pkg> is an ORPHAN PACKAGE`
-2. Maintainer changed → `WARNING: maintainer changed: "alice" → "eve"` (escalate if PKGBUILD also changed)
+2. ~~Maintainer changed~~ — **removed**; see "Git committer tracking" below for the replacement
 3. Account < 30 days old → `WARNING: maintainer "eve" registered 3 days ago`
 4. Account inactive → `WARNING: maintainer "eve" account status is Inactive`
 
@@ -220,19 +220,50 @@ type MaintainerInfo struct {
 }
 ```
 
-Call `fetchAURInfo` from `runScan`/`runGateCmd` (not inside `analyze()`). Store maintainer in `DBRecord`; shift to `prev_maintainer` each scan. `PackageFiles` gains `PkgBase string` from `.SRCINFO`.
+Call `fetchAURInfo` from `runScan`/`runGateCmd` (not inside `analyze()`). `PackageFiles` gains `PkgBase string` from `.SRCINFO`.
 
-**TODO (not yet implemented):**
-- Forced interactive confirmation on maintainer change in `gate` (prompt `[y/N]`; non-interactive aborts)
-- High-scrutiny flag if maintainer changed within last 6 months (from `AURInfo.LastModified`)
-- `maintainer_history` table replacing `prev_maintainer` for full audit trail:
-  ```sql
-  CREATE TABLE IF NOT EXISTS maintainer_history (
-      id               INTEGER PRIMARY KEY,
-      pkgname          TEXT NOT NULL,
-      changed_at       TEXT NOT NULL,
-      from_maintainer  TEXT,
-      to_maintainer    TEXT,
-      pkgbuild_changed INTEGER NOT NULL DEFAULT 0
-  );
-  ```
+**Removed / superseded:**
+- `storeMaintainer`, `prev_maintainer` column, and the `maintainer changed` warning in `printAURWarnings` — all replaced by the git committer tracking feature below.
+- The `maintainer_history` table plan is cancelled for the same reason.
+
+### Git committer tracking
+
+**Motivation:** The AUR `Maintainer` field-change signal (old warning 2) produced false positives — e.g., a legitimate co-maintainer temporarily holding the primary slot looks identical to an attacker claiming an orphaned package. The git history of the PKGBUILD repo is a more reliable signal: every legitimate contributor appears in `git shortlog`. A new email that has never committed before is the real red flag.
+
+**Approach:** `git shortlog` is the ground truth for "who has legitimately worked on this package." If a commit appears from an email address not seen in any prior commit, emit a cautionary warning. This naturally handles co-maintainers (they've committed before → not flagged) without requiring AUR username ↔ git identity correlation.
+
+**New function** (new file `git.go` or added to `collect.go`):
+```go
+// gitKnownCommitters returns the deduplicated set of committer emails
+// from the full git log of dir. Returns nil, nil if dir is not a git repo.
+func gitKnownCommitters(dir string) ([]string, error)
+// implementation: exec.Command("git", "-C", dir, "log", "--format=%ae")
+// deduplicate; sort; non-fatal on "not a git repo" exit code
+```
+
+**DB changes** (`db.go`):
+- Add `known_committers TEXT` column (JSON `[]string` of emails) to `packages`.
+- Add migration: `ALTER TABLE packages ADD COLUMN known_committers TEXT`
+- Add `KnownCommitters string` to `DBRecord`.
+- Update `lookupRecord` and `upsertRecord` to include `known_committers`.
+- Remove `storeMaintainer` function; remove `prev_maintainer` from `DBRecord` and queries (column can stay in DB for backwards compat but is ignored).
+
+**Scan/gate flow** (in `runScan` / `runGateCmd` in `main.go`):
+```
+currentEmails := gitKnownCommitters(pf.Dir)   // may be empty if not a git repo
+storedEmails  := unmarshal existing.KnownCommitters from DB
+
+newEmails := currentEmails \ storedEmails      // set difference
+
+for each email in newEmails:
+    fmt.Fprintf(os.Stderr,
+        "wAURden: new committer in %s git history: %s — keep a close eye on this package\n",
+        pf.Name, email)
+
+mergedEmails := union(currentEmails, storedEmails)
+// store mergedEmails as JSON in known_committers on upsert
+```
+
+**Warning level:** informational/cautionary only — does not affect the verdict or block the build. The LLM/heuristics handle the content; this tracks identity novelty.
+
+**Open question:** should the warning be escalated (e.g., affect `gate` exit code or require interactive confirmation) if the new committer is also the current AUR `Maintainer`? That would catch the "orphan takeover, first commit" scenario more aggressively. Defer this decision until the basic feature is proven useful.
