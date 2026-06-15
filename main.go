@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -214,10 +215,46 @@ func runGateCmd(args []string) {
 		}
 	}
 
+	// Scan failures (LLM unreachable, parse error, etc.) take a separate display
+	// path so the message reads like an infrastructure problem, not a security alarm.
+	if v.ScanFailed {
+		if cfg.OnError == "block" {
+			fmt.Fprintf(os.Stderr, "wAURden: build blocked — scan failed (on_error=block): %v\n", v.Summary)
+			os.Exit(1)
+		}
+		// on_error=warn: WARNING was already printed in analyze.go; pause so it
+		// doesn't scroll away before the user can read it.
+		if isTTY() {
+			fmt.Fprintf(os.Stderr, "Press Enter to continue (build will proceed)...")
+			bufio.NewReader(os.Stdin).ReadString('\n')
+		}
+		os.Exit(0)
+	}
+
+	// Clean OK: stay silent.
+	if v.Verdict == "ok" && !blocked {
+		os.Exit(0)
+	}
+
+	// Anything else (suspicious, malicious): show the report.
 	printReport(os.Stderr, pf.Name, v, cfg.Provider)
 
 	if blocked {
-		os.Exit(1)
+		if cfg.Interactive && isTTY() {
+			fmt.Fprintf(os.Stderr, "\nwAURden: build blocked. Allow anyway? [y/N]: ")
+			reader := bufio.NewReader(os.Stdin)
+			line, _ := reader.ReadString('\n')
+			if strings.EqualFold(strings.TrimSpace(line), "y") {
+				blocked = false
+			}
+		}
+		if blocked {
+			os.Exit(1)
+		}
+	} else if isTTY() {
+		// Suspicious but not blocked: pause so the warning doesn't scroll away.
+		fmt.Fprintf(os.Stderr, "\nPress Enter to continue (build will proceed)...")
+		bufio.NewReader(os.Stdin).ReadString('\n')
 	}
 }
 

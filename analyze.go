@@ -22,6 +22,7 @@ type Verdict struct {
 	Findings       []Finding `json:"findings"`
 	Summary        string    `json:"summary"`
 	SourceAnalyzed string    `json:"source_analyzed"`
+	ScanFailed     bool      `json:"-"` // set when scan failed; distinct from a real malicious verdict
 }
 
 func heuristicCheck(content string) *Verdict {
@@ -113,23 +114,28 @@ func parseVerdict(raw string) (Verdict, error) {
 func verdictFromOnError(cfg Config, cause error) Verdict {
 	switch cfg.OnError {
 	case "block":
+		// Return ok+ScanFailed so gate displays an infrastructure error, not a
+		// security alarm. The caller checks ScanFailed and exits 1 separately.
 		return Verdict{
-			Verdict:        "malicious",
+			Verdict:        "ok",
+			ScanFailed:     true,
 			Confidence:     0,
-			Summary:        fmt.Sprintf("Scan failed and on_error=block: %v", cause),
+			Summary:        fmt.Sprintf("Scan failed (on_error=block): %v", cause),
 			SourceAnalyzed: "none",
 		}
 	case "allow":
+		// User asked for silence on failure.
 		return Verdict{
 			Verdict:        "ok",
 			Confidence:     0,
-			Summary:        fmt.Sprintf("Scan failed and on_error=allow: %v", cause),
+			Summary:        fmt.Sprintf("Scan failed (on_error=allow): %v", cause),
 			SourceAnalyzed: "none",
 		}
 	default: // "warn"
 		fmt.Fprintf(os.Stderr, "wAURden WARNING: scan failed, build allowed by on_error=warn: %v\n", cause)
 		return Verdict{
 			Verdict:        "ok",
+			ScanFailed:     true,
 			Confidence:     0,
 			Summary:        fmt.Sprintf("Scan failed (on_error=warn): %v", cause),
 			SourceAnalyzed: "none",

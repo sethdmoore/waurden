@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"database/sql"
 	"fmt"
 	"os"
@@ -26,17 +25,6 @@ func runGate(cfg Config, db *sql.DB, pf PackageFiles) (Verdict, bool, error) {
 		if strings.EqualFold(v.Verdict, w) {
 			fmt.Fprintf(os.Stderr, "wAURden WARNING: package %q verdict is %s\n", pf.Name, v.Verdict)
 			break
-		}
-	}
-
-	if blocked && cfg.Interactive && isTTY() {
-		printReport(os.Stderr, pf.Name, v, "")
-		fmt.Fprintf(os.Stderr, "\nwAURden: build blocked. Allow anyway? [y/N]: ")
-		reader := bufio.NewReader(os.Stdin)
-		line, _ := reader.ReadString('\n')
-		line = strings.TrimSpace(line)
-		if strings.EqualFold(line, "y") {
-			blocked = false
 		}
 	}
 
