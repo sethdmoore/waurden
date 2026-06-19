@@ -149,6 +149,17 @@ func runScan(args []string) {
 		os.Exit(1)
 	}
 
+	// A scan failure (LLM unreachable, rate-limited, parse error) is an
+	// infrastructure problem, not a verdict — don't render it as "Verdict: OK".
+	if v.ScanFailed {
+		if cfg.OnError == "block" {
+			fmt.Fprintf(os.Stderr, "wAURden: scan failed (on_error=block): %v\n", v.Summary)
+			os.Exit(1)
+		}
+		// warn already printed a WARNING in analyze.go; allow is intentionally quiet.
+		os.Exit(0)
+	}
+
 	printReport(os.Stdout, pf.Name, v, cfg.Provider)
 }
 

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -40,27 +42,89 @@ func postJSON(client *http.Client, url string, headers map[string]string, body i
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest("POST", url, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
+
+	// Rate limits (429) and temporary unavailability (503) are transient — common
+	// on free/shared endpoints like OpenRouter's :free models. Retry a few times,
+	// honoring the provider's Retry-After, before surfacing an error.
+	const maxAttempts = 3
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequest("POST", url, bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		respBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if resp.StatusCode < 400 {
+			return respBody, nil
+		}
+		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attempt < maxAttempts {
+			wait := retryAfter(resp.Header.Get("Retry-After"))
+			fmt.Fprintf(os.Stderr, "wAURden: provider rate-limited (HTTP %d), retrying in %s (attempt %d/%d)\n",
+				resp.StatusCode, wait, attempt, maxAttempts)
+			time.Sleep(wait)
+			continue
+		}
+		return nil, httpError(resp.StatusCode, respBody)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
+}
+
+// retryAfter derives a sleep duration from the Retry-After header, falling back
+// to a short default and capping the wait so a build gate never stalls for long.
+func retryAfter(header string) time.Duration {
+	const fallback = 3 * time.Second
+	const maxWait = 20 * time.Second
+	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs >= 0 {
+		d := time.Duration(secs) * time.Second
+		if d > maxWait {
+			return maxWait
+		}
+		return d
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	return fallback
+}
+
+// httpError condenses a provider error response to a single readable line,
+// extracting the human-readable message and discarding the raw JSON blob
+// (which can carry account identifiers and other noise).
+func httpError(status int, body []byte) error {
+	var parsed struct {
+		Error struct {
+			Message  string `json:"message"`
+			Metadata struct {
+				Raw string `json:"raw"`
+			} `json:"metadata"`
+		} `json:"error"`
 	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
+	if json.Unmarshal(body, &parsed) == nil {
+		// metadata.raw is usually the most specific (e.g. which upstream provider
+		// rate-limited and for how long); prefer it over the generic message.
+		if msg := parsed.Error.Metadata.Raw; msg != "" {
+			return fmt.Errorf("HTTP %d: %s", status, msg)
+		}
+		if msg := parsed.Error.Message; msg != "" {
+			return fmt.Errorf("HTTP %d: %s", status, msg)
+		}
 	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
+	// Fallback: collapse whitespace and truncate so we never dump a full blob.
+	s := strings.Join(strings.Fields(string(body)), " ")
+	if len(s) > 200 {
+		s = s[:200] + "…"
 	}
-	return respBody, nil
+	if s == "" {
+		return fmt.Errorf("HTTP %d", status)
+	}
+	return fmt.Errorf("HTTP %d: %s", status, s)
 }
 
 func resolveAPIKey(cfg Config) (string, error) {

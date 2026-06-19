@@ -117,10 +117,12 @@ func verdictFromOnError(cfg Config, cause error) Verdict {
 		// Return ok+ScanFailed so gate displays an infrastructure error, not a
 		// security alarm. The caller checks ScanFailed and exits 1 separately.
 		return Verdict{
-			Verdict:        "ok",
-			ScanFailed:     true,
-			Confidence:     0,
-			Summary:        fmt.Sprintf("Scan failed (on_error=block): %v", cause),
+			Verdict:    "ok",
+			ScanFailed: true,
+			Confidence: 0,
+			// Summary holds only the cause; the display layer adds the
+			// "scan failed (on_error=…)" framing so it isn't repeated.
+			Summary:        fmt.Sprintf("%v", cause),
 			SourceAnalyzed: "none",
 		}
 	case "allow":
@@ -128,7 +130,7 @@ func verdictFromOnError(cfg Config, cause error) Verdict {
 		return Verdict{
 			Verdict:        "ok",
 			Confidence:     0,
-			Summary:        fmt.Sprintf("Scan failed (on_error=allow): %v", cause),
+			Summary:        fmt.Sprintf("%v", cause),
 			SourceAnalyzed: "none",
 		}
 	default: // "warn"
@@ -137,7 +139,7 @@ func verdictFromOnError(cfg Config, cause error) Verdict {
 			Verdict:        "ok",
 			ScanFailed:     true,
 			Confidence:     0,
-			Summary:        fmt.Sprintf("Scan failed (on_error=warn): %v", cause),
+			Summary:        fmt.Sprintf("%v", cause),
 			SourceAnalyzed: "none",
 		}
 	}
