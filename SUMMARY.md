@@ -11,5 +11,21 @@ persisting the union in a new `known_committers` DB column (migrated via `ALTER 
 scan is silent (no baseline). Removed `storeMaintainer`/`prev_maintainer` from the write path and
 the maintainer-changed block in `printAURWarnings`. Note: the analyze cache-hit early-return means a
 new committer is re-warned each scan until the PKGBUILD changes — acceptable for a cautionary signal.
+Latest patch (`0001-provider-retry-429-clean-errors.patch`): provider-error UX. `postJSON` now retries
+transient 429/503 up to 3× honoring `Retry-After` (capped 20s) — free OpenRouter models rate-limit
+constantly, so this is what makes real runs usable. A new `httpError` extracts the human message
+(prefers `metadata.raw`) instead of dumping the raw JSON blob (which leaked the account `user_id`).
+`verdictFromOnError` now stores only the cause in `Summary` so the gate's block line no longer doubles
+the "scan failed (on_error=…)" prefix, and `runScan` honors `v.ScanFailed` (prints an infra-error line
+or stays quiet, instead of a misleading `Verdict: OK 0.00`).
+
+Heuristic findings now quote the **whole offending source line** as `Evidence` (via
+`FindAllStringIndex`+`lineAt`) instead of the bare matched token, so a block like google-chrome's
+`/etc/cron` match reads as `rm -f "${pkgdir}/etc/cron.daily/google-chrome"` — self-explanatory, and
+obviously a benign removal rather than a persistence write. Repeated hits on one line are collapsed.
+(Note: the built-in persistence regex still false-positives on `$pkgdir`-scoped removals; tightening
+it — e.g. ignoring `rm`/`${pkgdir}` contexts — is a separate follow-up, not done here.)
+
 Next: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real LLM
-providers via OpenRouter.
+providers via OpenRouter. TODO (tracked): `waurden version` should print the git SHA alongside version
+numbers (build-time `-ldflags -X`).

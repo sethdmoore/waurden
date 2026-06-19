@@ -29,12 +29,22 @@ func heuristicCheck(content string) *Verdict {
 	var findings []Finding
 
 	for _, p := range activePatterns {
-		for _, m := range p.re.FindAllString(content, -1) {
+		// Report the whole line that triggered the match, not just the
+		// matched token. "/etc/cron" alone is unactionable; the full line
+		// (e.g. `rm "${pkgdir}/etc/cron.daily/google-chrome"`) lets a user
+		// tell a real persistence write from a benign removal at a glance.
+		seen := make(map[string]bool)
+		for _, loc := range p.re.FindAllStringIndex(content, -1) {
+			line := lineAt(content, loc[0])
+			if seen[line] {
+				continue // collapse repeated hits on the same line
+			}
+			seen[line] = true
 			findings = append(findings, Finding{
 				Severity: p.severity,
 				File:     "PKGBUILD",
 				Detail:   p.detail,
-				Evidence: m,
+				Evidence: line,
 			})
 		}
 	}
@@ -43,7 +53,7 @@ func heuristicCheck(content string) *Verdict {
 		return nil
 	}
 
-	summary := fmt.Sprintf("Heuristic analysis detected %d suspicious pattern(s). Manual review required.", len(findings))
+	summary := fmt.Sprintf("Heuristic analysis flagged %d line(s) matching known-malicious patterns; review the findings below. Manual review required.", len(findings))
 	return &Verdict{
 		Verdict:        "malicious",
 		Confidence:     0.95,
@@ -51,6 +61,23 @@ func heuristicCheck(content string) *Verdict {
 		Summary:        summary,
 		SourceAnalyzed: "pkgbuild-only",
 	}
+}
+
+// lineAt returns the full line containing byte offset off within content,
+// trimmed of surrounding whitespace, so a finding can quote the offending
+// source line rather than just the matched token.
+func lineAt(content string, off int) string {
+	if off < 0 || off > len(content) {
+		return ""
+	}
+	start := strings.LastIndexByte(content[:off], '\n') + 1
+	end := strings.IndexByte(content[off:], '\n')
+	if end < 0 {
+		end = len(content)
+	} else {
+		end += off
+	}
+	return strings.TrimSpace(content[start:end])
 }
 
 const systemPrompt = `You are a security auditor for Arch Linux AUR PKGBUILDs. Your job is to detect malicious or suspicious code.
