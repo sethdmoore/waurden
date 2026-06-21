@@ -26,6 +26,16 @@ obviously a benign removal rather than a persistence write. Repeated hits on one
 (Note: the built-in persistence regex still false-positives on `$pkgdir`-scoped removals; tightening
 it — e.g. ignoring `rm`/`${pkgdir}` contexts — is a separate follow-up, not done here.)
 
+**Next planned feature (designed, not yet built): gate exceptions via hash-pinned acknowledgement** —
+see CLAUDE.md §10 "Gate exceptions". A user can permanently accept a blocked package, but only for the
+exact reviewed `pkgbuild_hash`; any PKGBUILD change voids the ack and forces a re-scan (preserves
+Atomic-Arch protection — no by-name allowlist). Acceptance friction is tiered: `malicious` with
+confidence ≥ 0.9 requires typing `I accept the risk`; otherwise plain `[y/N]`. Adds an
+`acknowledged_hash` column (owned by a separate `storeAcknowledgement` writer, kept out of
+`upsertRecord` so normal scans don't clobber it) and a `waurden allow <DIR>` command as the non-TTY
+escape hatch for the makepkg hook. Tighten the `${pkgdir}`/`rm` persistence regex first/in parallel,
+else the heuristic's flat 0.95 confidence makes the heavy prompt fire on the google-chrome FP.
+
 Next: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real LLM
 providers via OpenRouter. TODO (tracked): `waurden version` should print the git SHA alongside version
 numbers (build-time `-ldflags -X`).

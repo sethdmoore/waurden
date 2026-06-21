@@ -286,3 +286,95 @@ mergedEmails := union(currentEmails, storedEmails)
 **Warning level:** informational/cautionary only — does not affect the verdict or block the build. The LLM/heuristics handle the content; this tracks identity novelty.
 
 **Open question:** should the warning be escalated (e.g., affect `gate` exit code or require interactive confirmation) if the new committer is also the current AUR `Maintainer`? That would catch the "orphan takeover, first commit" scenario more aggressively. Defer this decision until the basic feature is proven useful.
+
+### Gate exceptions — hash-pinned acknowledgement (NOT YET IMPLEMENTED)
+
+**Goal:** let a user permanently accept an otherwise-blocked package *without* disabling
+protection — e.g. "I reviewed google-chrome's PKGBUILD and I'm fine with the cron line."
+
+**Locked design decisions (do not relitigate):**
+- **Scope = hash-pinned, never by-name.** An exception is `(package_name, acknowledged_hash)`
+  where the hash is `pf.Hash` (the existing `pkgbuild_hash`). The gate honours it **only** when
+  the *current* `pf.Hash` equals the stored ack. Any PKGBUILD edit changes the hash → the ack is
+  automatically void → the package is re-scanned from scratch. This is the whole point: a by-name
+  allowlist would defeat wAURden's core purpose (the Atomic Arch attack *is* a malicious update to
+  an already-trusted package). Do not add a by-name or by-pattern allowlist.
+- **Acceptance friction is tiered by confidence** (a security UX requirement from the user):
+  - blocked `suspicious`, or `malicious` with `confidence < 0.9` → print the reason, then a plain
+    `Allow anyway? [y/N]`.
+  - blocked `malicious` with `confidence >= 0.9` → print the reason, then require the user to type
+    the **exact phrase `I accept the risk`** (case-insensitive, trimmed). A bare `y` must NOT pass.
+  - In both cases, print the verdict reason (`v.Summary` + the highest-severity finding's
+    `Detail`/`Evidence`) *above* the prompt so the user sees what they're accepting.
+  - On acceptance, ask `Remember this version? [Y/n]`; if yes, persist the ack.
+
+**DB changes (`db.go`):**
+- Add column `acknowledged_hash TEXT` to the `packages` `CREATE TABLE` and to `migrateColumns`
+  (`ALTER TABLE packages ADD COLUMN acknowledged_hash TEXT`).
+- Add `AcknowledgedHash string` to `DBRecord`; read it in `lookupRecord`
+  (`COALESCE(acknowledged_hash,'')`).
+- **Do NOT add `acknowledged_hash` to `upsertRecord`.** That upsert uses
+  `ON CONFLICT(name) DO UPDATE SET <named columns>`; because it never names `acknowledged_hash`,
+  a normal scan leaves the column untouched — exactly what we want (the ack must survive routine
+  re-scans). Give the ack its own writer instead:
+  ```go
+  func storeAcknowledgement(db *sql.DB, name, hash string) error
+  // UPDATE packages SET acknowledged_hash=? WHERE name=?
+  // (the row already exists — analyze()/storeVerdict ran first this same invocation)
+  ```
+
+**Gate flow (`runGateCmd` in `main.go`, around the existing block at lines ~241-252):**
+```
+// existing is the *DBRecord already fetched at the top of runGateCmd
+if blocked && existing != nil && existing.AcknowledgedHash != "" && existing.AcknowledgedHash == pf.Hash {
+    fmt.Fprintf(os.Stderr, "wAURden: %s @ %s previously acknowledged — allowing\n", pf.Name, short(pf.Hash))
+    blocked = false
+}
+if blocked && cfg.Interactive && isTTY() {
+    printReport(...)                 // already happens; ensure reason is visible
+    accepted := false
+    if v.Verdict == "malicious" && v.Confidence >= 0.9 {
+        // require typed phrase "I accept the risk"
+        accepted = (strings.EqualFold(strings.TrimSpace(line), "i accept the risk"))
+    } else {
+        // plain y/N
+        accepted = (strings.EqualFold(strings.TrimSpace(line), "y"))
+    }
+    if accepted {
+        blocked = false
+        // ask "Remember this version? [Y/n]"; default yes
+        if remember { storeAcknowledgement(db, pf.Name, pf.Hash) }
+    }
+}
+if blocked { os.Exit(1) }
+```
+Notes: the ack short-circuit MUST run even when there is no TTY (it's just a hash compare) — that's
+what makes the hook path usable. The typed-accept prompt only runs under `cfg.Interactive && isTTY()`.
+
+**New command `waurden allow <DIR>` (the non-TTY escape hatch — REQUIRED, not optional):**
+The `makepkg.conf.d` hook usually has **no TTY**, so the interactive accept never fires during a
+`yay` build — the build just blocks. The intended recovery is: build blocks → user runs
+`waurden allow <pkgdir>` in a real terminal → ack stored → re-run the build, gate passes via the
+short-circuit above. Implement:
+- Dispatch `allow` in `main.go` and add it to `printUsage()`.
+- It runs `collectPackageFiles(dir)` to get `pf.Name`/`pf.Hash`, ensures a row exists (run a scan
+  first if `lookupRecord` returns nil, or just `upsertRecord` a minimal row), then
+  `storeAcknowledgement(db, pf.Name, pf.Hash)` and prints
+  `recorded ack: <name> @ <shorthash> (cleared automatically when the PKGBUILD changes)`.
+- Consider requiring the same typed `I accept the risk` confirmation here for symmetry; optional.
+
+**Interaction with the regex false positive (do this FIRST or in parallel):** heuristic blocks are
+hardcoded `confidence = 0.95` in `heuristicCheck`, so *every* heuristic block — including the
+google-chrome `${pkgdir}`/`rm` false positive — would trip the heavy "type `I accept the risk`"
+path. Before/with this feature, tighten the persistence regex so `${pkgdir}`-scoped paths and lines
+beginning with `rm` are not flagged (planned as a separate patch). Otherwise the high-friction
+prompt fires on a bug rather than a real threat.
+
+**Edge cases / non-goals:**
+- `pf.Name == "unknown"` (pkgname parse failed): no stable key, so no ack — skip the short-circuit
+  and the remember step.
+- The `ScanFailed` / `on_error` path is unrelated and unchanged — never offer an ack for an
+  infrastructure failure.
+- Non-interactive + no prior ack = blocked, exit 1 (policy stays absolute in the hook).
+- Keep it advisory-free: an ack only suppresses the *block*; warnings (`warn_on`, AUR/committer
+  notes) still print.
