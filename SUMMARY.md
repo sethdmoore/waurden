@@ -45,6 +45,13 @@ confidence ≥ 0.9 requires typing `I accept the risk`; otherwise plain `[y/N]`.
 escape hatch for the makepkg hook. Tighten the `${pkgdir}`/`rm` persistence regex first/in parallel,
 else the heuristic's flat 0.95 confidence makes the heavy prompt fire on the google-chrome FP.
 
-Next: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real LLM
-providers via OpenRouter. TODO (tracked): `waurden version` should print the git SHA alongside version
-numbers (build-time `-ldflags -X`).
+Next planned changeset (designed, not built): **cache invalidation & version reporting** — see
+CLAUDE.md §10 "Cache invalidation & version reporting". (1) Add provider/model to the `analyze()`
+cache-hit guard so switching models invalidates a stale verdict; (2) `scan --force` (and an optional
+`forget <pkg>` that blanks `pkgbuild_hash` rather than deleting the row, to preserve
+`known_committers`/`acknowledged_hash`) to re-scan without wiping the DB; (3) expose the commit SHA in
+`waurden version` via `runtime/debug.ReadBuildInfo()` (`vcs.revision`). Items 1–2 share the cache-hit
+code; item 3 is independent and small.
+
+Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
+LLM providers via OpenRouter.

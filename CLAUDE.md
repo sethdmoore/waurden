@@ -381,3 +381,60 @@ prompt fires on a bug rather than a real threat.
 - Non-interactive + no prior ack = blocked, exit 1 (policy stays absolute in the hook).
 - Keep it advisory-free: an ack only suppresses the *block*; warnings (`warn_on`, AUR/committer
   notes) still print.
+
+### Cache invalidation & version reporting (NOT YET IMPLEMENTED — next session)
+
+Three related improvements to the verdict cache and `waurden version`. Context: the cache-hit
+guard at the top of `analyze()` keys **only** on `existing.PKGBUILDHash == pf.Hash`. The row already
+stores `provider`/`model` (as `"<provider>/<model>"`, built in `storeVerdict`) but it is *ignored* on
+read. (Items 1–2 share that cache-hit code path — implement them together; item 3 is independent.)
+
+**1. A model/provider change must invalidate the cached verdict.**
+- Problem: a verdict produced by `static`/mock heuristics or a weaker model is re-served verbatim
+  after switching to a stronger model — the new model never sees the package.
+- Fix: add the stored provider/model to the cache-hit condition. Rebuild the same `providerStr` the
+  write path uses and compare:
+  ```go
+  providerStr := cfg.Provider
+  if cfg.Model != "" { providerStr = cfg.Provider + "/" + cfg.Model }
+  if existing != nil && existing.PKGBUILDHash == pf.Hash && existing.Provider == providerStr {
+      // cache hit
+  }
+  ```
+  A mismatch becomes an ordinary cache **miss** → re-scan → `upsertRecord` overwrites the row. No
+  delete, no migration (existing rows already carry a `Provider` string).
+- **Decision (recommended): key on provider+model only, NOT `base_url`.** A base_url swap
+  (OpenRouter↔Ollama at the same model name) is rare and the model name usually differs anyway.
+  Record it as a known gap rather than widening the key.
+- **Decision (recommended): do NOT fold the binary/prompt version into the key.** The system prompt
+  is a const, so a prompt revision *does* change verdicts on identical input — but version-keying
+  would invalidate every cache on every upgrade and hammer rate-limited free endpoints for no gain in
+  the common case. If a prompt change is security-critical, the `--force` flag (item 2) covers it.
+
+**2. Invalidate a cached entry without wiping the whole DB.**
+- **Primary: `scan --force` (alias `--no-cache`).** Thread a `force bool` into `analyze()` that skips
+  the cache-**read** branch (`analyze.go` ~lines 209-226) entirely; the fresh result is upserted as
+  normal, overwriting only that package's row via the existing write path. This is the cleanest
+  "invalidate without wiping" — one row, preserves `known_committers` and (future) `acknowledged_hash`.
+  `gate` need not expose it (the makepkg hook never passes flags); `scan` is the real target.
+- **Optional: `waurden forget <pkgname>`** for clearing without re-scanning / scripting.
+  - **Do NOT implement as `DELETE FROM packages WHERE name=?`.** A row delete also wipes the
+    `known_committers` baseline (committer tracking loses history → re-warns everything) and, once
+    gate-exceptions land, `acknowledged_hash`.
+  - Implement as `UPDATE packages SET pkgbuild_hash='' WHERE name=?`: the next scan misses, re-scans,
+    and `upsertRecord` refreshes the verdict while committer history and any ack survive untouched.
+- Invalidating the verdict cache must NOT revoke an `acknowledged_hash` — independent user decisions;
+  keep `--force`/`forget` clear of the ack column.
+- Note: post-0005 (scan failures no longer cached), the remaining use for force-rescan is
+  re-evaluating a *successful* verdict (model improved, second opinion) — not unsticking a failure.
+
+**3. Expose the commit SHA in `waurden version`.**
+- Today: `const version = "0.1.0"` → `wAURden 0.1.0`.
+- **Recommended: `runtime/debug.ReadBuildInfo()`** reading `vcs.revision` / `vcs.time` /
+  `vcs.modified` (the `BuildInfo.Settings` entries) — zero coupling to the PKGBUILD/build system.
+  Output e.g. `wAURden 0.1.0 (abc1234, 2026-06-20, dirty)`. Auto-populated for a `-git` package built
+  from a clone.
+- Caveat: `go build` only stamps VCS info when building inside the module's git repo with `-buildvcs`
+  enabled (default). Verify `waurden-git`'s PKGBUILD `build()` runs `go build` in the clone. Fall back
+  to `-ldflags "-X main.commit=<sha>"` only if a build path strips the stamp.
+- Keep the hard-coded `version` const as the human release number; the SHA augments it.
