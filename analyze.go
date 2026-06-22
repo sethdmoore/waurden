@@ -242,16 +242,22 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles) (Verdict, error) {
 
 	raw, err := callProvider(cfg, systemPrompt, userContent)
 	if err != nil {
-		ev := verdictFromOnError(cfg, err)
-		_ = storeVerdict(cfg, db, pf, ev, diff)
-		return ev, nil
+		// Never cache a failed scan. verdictFromOnError returns a verdict="ok"
+		// fallback whose ScanFailed flag is json:"-", so it is NOT reconstructed
+		// on a cache hit (see the hash-match path above). Persisting it would let
+		// the next run of the same pkgbuild_hash read a plain cached "ok" and pass
+		// the gate without ever re-scanning — defeating on_error="block" on the
+		// second run. A provider error is an infrastructure outcome, not a verdict
+		// about this PKGBUILD's content, so we skip the store and re-attempt every
+		// run, keeping the gate fail-closed.
+		return verdictFromOnError(cfg, err), nil
 	}
 
 	v, err := parseVerdict(raw)
 	if err != nil {
-		ev := verdictFromOnError(cfg, fmt.Errorf("parse LLM response: %w", err))
-		_ = storeVerdict(cfg, db, pf, ev, diff)
-		return ev, nil
+		// Same reasoning as the provider-error path above: a parse failure is not
+		// a content verdict, so it must not be cached.
+		return verdictFromOnError(cfg, fmt.Errorf("parse LLM response: %w", err)), nil
 	}
 
 	if err := storeVerdict(cfg, db, pf, v, diff); err != nil {

@@ -4,6 +4,15 @@ files: `main.go`, `config.go`, `collect.go`, `analyze.go`, `provider.go` (`anthr
 `db.go`, `gate.go`, `aur.go`, `git.go`, `configure.go`, `heuristics.go`, plus hooks, config examples
 (including `heuristics.example.toml`), a `PKGBUILD` for `waurden-git`, and README.
 
+Latest fix: **scan-failure cache poisoning** (CLAUDE.md §9, fail-open bug). `analyze()` was
+persisting the `verdictFromOnError` fallback (`verdict="ok"`) on provider/parse failure; because
+`ScanFailed` is `json:"-"` it wasn't rebuilt on a cache hit, so the next run of the same
+`pkgbuild_hash` read a cached `ok` and the gate passed without re-scanning — which is exactly why a
+429-blocked build "passed" (and kept replaying the stale error, same `retry_after`) on rebuild. Fix:
+removed both error-path `storeVerdict` calls so a failed scan is never cached and is re-attempted
+every run (gate stays fail-closed). An already-poisoned row survives until the PKGBUILD hash changes —
+delete the DB row/file to force a clean re-scan.
+
 Recent changes: implemented **git committer tracking** (new `git.go`), replacing the removed
 AUR maintainer-change warning. `gitKnownCommitters` reads `git log --format=%ae`; `trackNewCommitters`
 warns (informational, never blocks) when an author email appears that no prior scan recorded,
