@@ -299,8 +299,10 @@ func runGateCmd(args []string) {
 		os.Exit(0)
 	}
 
-	// Clean OK: stay silent.
+	// Clean OK: emit a one-line confirmation so the verdict is visible in the
+	// makepkg/yay log (the build otherwise gives no sign wAURden ran at all).
 	if v.Verdict == "ok" && !blocked {
+		fmt.Fprintf(os.Stderr, "wAURden: %s — OK (confidence %.2f, %s)\n", pf.Name, v.Confidence, providerLabel(cfg))
 		os.Exit(0)
 	}
 

@@ -89,5 +89,24 @@ keying; `show` still prints the stored value. Verified end-to-end with the binar
 heuristics-mode @0.50 with no network, heuristics-mode still blocks the malicious sample, llm-mode
 bypasses the pre-filter (hits the network), and a heuristics→full switch invalidates the cache.
 
+Latest changeset (DONE): **gate-log visibility + heuristic pre-filter ahead of the cache.** Under a
+makepkg/yay hook the gate was silent: a clean verdict exited 0 with no output, and the LLM call left the
+terminal hanging with no sign of activity. Two changes: (1) `analyze()` prints `wAURden: scanning <pkg>
+via <providerLabel>…` to stderr immediately before `callProvider` — only on the cache-miss network path,
+so it marks exactly the moment that otherwise looks frozen; (2) `runGateCmd`'s clean-OK branch now prints
+a one-line `wAURden: <pkg> — OK (confidence X, <providerLabel>)` instead of exiting silently, so the
+verdict shows in the build log. The blocked/suspicious path already printed the full report.
+
+Same changeset fixes the **stale-verdict replay** (the recurring google-chrome false `MALICIOUS`): the
+cache lookup in `analyze()` ran *before* the heuristic pre-filter, so a verdict cached by an older binary
+(unchanged PKGBUILD hash + same provider → cache hit) was replayed verbatim and the corrected heuristic
+never voted. Reordered so the heuristic pre-filter runs **before** the verdict cache read: the current
+binary's rules always get a vote, so a fixed false positive *or a newly added detection* takes effect on
+the next run even when the hash is unchanged (a cached `ok` can be re-flagged). A clean heuristic result
+still falls through to the cache, so legitimate LLM-verdict cache hits are preserved (no extra LLM calls).
+Verified: heuristic block overrides a poisoned cached `ok`; clean heuristics still serve a cached verdict;
+OK one-liner + scanning line appear on the right paths. **Existing poisoned rows are not retroactively
+healed** — clear them once with `waurden forget <pkg>` (or let the PKGBUILD hash change).
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.

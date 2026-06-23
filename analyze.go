@@ -273,11 +273,9 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	providerStr := engineString(cfg)
 	mode := scanMode(cfg)
 
-	// Cache: same hash AND same provider/model = same content scanned by the same
-	// engine = reuse verdict. A provider/model change is treated as a cache miss so
-	// a verdict from a weaker model (or static heuristics) is re-scanned by the new
-	// one rather than re-served. force skips the read entirely (scan --force).
-	// Skip if name is "unknown" — pkgname parse failed, bucket is unreliable.
+	// Look up any existing row up front: it feeds both the heuristic-vs-cache
+	// decision below and the diff baseline further down. Skip if name is "unknown"
+	// — pkgname parse failed, so the bucket is unreliable.
 	var existing *DBRecord
 	if pf.Name != "unknown" {
 		var err error
@@ -285,21 +283,16 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 		if err != nil {
 			return Verdict{}, fmt.Errorf("db lookup: %w", err)
 		}
-		if !force && existing != nil && existing.PKGBUILDHash == pf.Hash && existing.Provider == providerStr {
-			var v Verdict
-			v.Verdict = existing.Verdict
-			v.Confidence = existing.Confidence
-			v.Summary = existing.Summary
-			v.SourceAnalyzed = existing.SourceAnalyzed
-			if existing.Findings != "" {
-				_ = json.Unmarshal([]byte(existing.Findings), &v.Findings)
-			}
-			return v, nil
-		}
 	}
 
-	// Heuristic pre-filter — runs in full and heuristics-only modes; skipped only
-	// in llm-only mode, where the user has opted to rely on the model alone.
+	// Heuristic pre-filter — runs BEFORE the verdict cache so the *current* binary's
+	// rules always get a vote, regardless of what an earlier scan cached. This is
+	// deliberate: the heuristics ship with the binary and are free to recompute, so a
+	// fixed false positive (e.g. the google-chrome ${pkgdir}/cron line) or a newly
+	// added detection takes effect immediately on the next run, even when the PKGBUILD
+	// hash is unchanged. If the cache were consulted first, a stale heuristic verdict
+	// would be replayed forever (and a new rule could never re-flag a cached "ok").
+	// Skipped only in llm-only mode, where the user has opted to rely on the model alone.
 	if mode != scanModeLLM {
 		if hv := heuristicCheck(pf.PKGBUILDSrc); hv != nil {
 			if err := storeVerdict(cfg, db, pf, *hv, ""); err != nil {
@@ -307,6 +300,25 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 			}
 			return *hv, nil
 		}
+	}
+
+	// Verdict cache: same hash AND same provider/model = same content scanned by the
+	// same engine = reuse verdict. A provider/model change is treated as a cache miss
+	// so a verdict from a weaker model (or static heuristics) is re-scanned by the new
+	// one rather than re-served. force skips the read entirely (scan --force). Reached
+	// only when the heuristic pre-filter above found nothing, so a fixed/added heuristic
+	// rule is never shadowed by a cached verdict.
+	if !force && pf.Name != "unknown" && existing != nil &&
+		existing.PKGBUILDHash == pf.Hash && existing.Provider == providerStr {
+		var v Verdict
+		v.Verdict = existing.Verdict
+		v.Confidence = existing.Confidence
+		v.Summary = existing.Summary
+		v.SourceAnalyzed = existing.SourceAnalyzed
+		if existing.Findings != "" {
+			_ = json.Unmarshal([]byte(existing.Findings), &v.Findings)
+		}
+		return v, nil
 	}
 
 	// heuristics-only mode never consults the LLM: a clean pre-filter is the
@@ -332,6 +344,12 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	}
 
 	userContent := buildUserContent(pf, diff)
+
+	// Tell the user what is happening before the (potentially slow) network call.
+	// This is the point where the terminal otherwise appears to hang under a
+	// makepkg/yay hook — only reached on a cache miss in full/llm mode, so it
+	// fires exactly when the LLM is actually being consulted, not on a cache hit.
+	fmt.Fprintf(os.Stderr, "wAURden: scanning %s via %s…\n", pf.Name, providerLabel(cfg))
 
 	raw, err := callProvider(cfg, systemPrompt, userContent)
 	if err != nil {
