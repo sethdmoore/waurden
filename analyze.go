@@ -36,6 +36,15 @@ func heuristicCheck(content string) *Verdict {
 		seen := make(map[string]bool)
 		for _, loc := range p.re.FindAllStringIndex(content, -1) {
 			line := lineAt(content, loc[0])
+			// The persistence pattern matches paths like /etc/cron, which also
+			// appear in benign packaging lines — e.g. google-chrome's
+			// `rm -f "${pkgdir}/etc/cron.daily/google-chrome"`. A removal, or a
+			// path scoped to ${pkgdir}/${srcdir}, writes nothing to the live
+			// system, so it is not persistence. Skip those rather than firing a
+			// 0.95-confidence block (which would trip the heavy gate-override prompt).
+			if p.benignInPkgdir && benignPkgdirContext(line) {
+				continue
+			}
 			if seen[line] {
 				continue // collapse repeated hits on the same line
 			}
@@ -61,6 +70,19 @@ func heuristicCheck(content string) *Verdict {
 		Summary:        summary,
 		SourceAnalyzed: "pkgbuild-only",
 	}
+}
+
+// benignPkgdirContext reports whether a flagged line is a normal packaging
+// operation rather than a live-system persistence write: a removal (rm ...), or
+// a path scoped to the package staging dir (${pkgdir}) or source dir (${srcdir}).
+// Installing a cron/systemd file into ${pkgdir}/etc during package() is how
+// packages legitimately ship those files, so it must not be flagged.
+func benignPkgdirContext(line string) bool {
+	t := strings.TrimSpace(line)
+	if strings.HasPrefix(t, "rm ") || strings.HasPrefix(t, "rm\t") {
+		return true
+	}
+	return strings.Contains(line, "pkgdir") || strings.Contains(line, "srcdir")
 }
 
 // lineAt returns the full line containing byte offset off within content,

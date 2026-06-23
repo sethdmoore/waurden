@@ -14,6 +14,11 @@ type HeuristicPattern struct {
 	Regex    string `toml:"regex"`
 	Severity string `toml:"severity"`
 	Detail   string `toml:"detail"`
+	// benignInPkgdir suppresses a match when the offending line is plainly a
+	// packaging operation rather than a live-system write (a removal, or a path
+	// scoped to ${pkgdir}/${srcdir}). Set on the persistence built-in only; not
+	// settable from user TOML (unexported, so toml decode ignores it).
+	benignInPkgdir bool
 }
 
 type heuristicsFile struct {
@@ -21,21 +26,22 @@ type heuristicsFile struct {
 }
 
 type compiledPattern struct {
-	re       *regexp.Regexp
-	severity string
-	detail   string
+	re             *regexp.Regexp
+	severity       string
+	detail         string
+	benignInPkgdir bool
 }
 
 // builtinPatterns are always active regardless of external files.
 var builtinPatterns = []HeuristicPattern{
-	{`(?i)(curl|wget|fetch)[^\n]*\|[^\n]*(sh|bash|zsh|dash)`, "critical", "curl/wget piped to shell — arbitrary remote code execution"},
-	{`(?i)\b(curl|wget)\b[^\n]*https?://\S+`, "high", "network download in build script — fetches content not declared in source=()"},
-	{`(~/\.ssh|\$HOME/\.ssh|~/\.aws|\$HOME/\.aws|~/\.mozilla|\$HOME/\.mozilla|~/\.config/google-chrome|~/\.config/chromium|~/\.gnupg|\$HOME/\.gnupg|~/\.password-store|\$HOME/\.password-store)`, "critical", "access to sensitive credential/key directories — possible exfiltration"},
-	{`eval.*base64|eval.*\$\(|base64 -d[^\n]*\|[^\n]*(sh|bash)`, "critical", "eval of encoded content — obfuscated code execution"},
-	{`npm install [^@\s][^\s]*/[^\s]+`, "high", "npm install of package with path-style name — possible typosquatting"},
-	{`pip install [^\s]*(http://|https://|git\+)`, "high", "pip install from URL — arbitrary code execution via pip"},
-	{`go install [^\s]*(http://|https://)`, "high", "go install from URL — arbitrary code execution via go"},
-	{`(~/\.config/autostart|/etc/systemd|~/\.bashrc|\$HOME/\.bashrc|~/\.profile|\$HOME/\.profile|/etc/cron|~/\.config/systemd|\$HOME/\.config/systemd)`, "high", "writing to autostart/systemd/profile — persistence mechanism"},
+	{Regex: `(?i)(curl|wget|fetch)[^\n]*\|[^\n]*(sh|bash|zsh|dash)`, Severity: "critical", Detail: "curl/wget piped to shell — arbitrary remote code execution"},
+	{Regex: `(?i)\b(curl|wget)\b[^\n]*https?://\S+`, Severity: "high", Detail: "network download in build script — fetches content not declared in source=()"},
+	{Regex: `(~/\.ssh|\$HOME/\.ssh|~/\.aws|\$HOME/\.aws|~/\.mozilla|\$HOME/\.mozilla|~/\.config/google-chrome|~/\.config/chromium|~/\.gnupg|\$HOME/\.gnupg|~/\.password-store|\$HOME/\.password-store)`, Severity: "critical", Detail: "access to sensitive credential/key directories — possible exfiltration"},
+	{Regex: `eval.*base64|eval.*\$\(|base64 -d[^\n]*\|[^\n]*(sh|bash)`, Severity: "critical", Detail: "eval of encoded content — obfuscated code execution"},
+	{Regex: `npm install [^@\s][^\s]*/[^\s]+`, Severity: "high", Detail: "npm install of package with path-style name — possible typosquatting"},
+	{Regex: `pip install [^\s]*(http://|https://|git\+)`, Severity: "high", Detail: "pip install from URL — arbitrary code execution via pip"},
+	{Regex: `go install [^\s]*(http://|https://)`, Severity: "high", Detail: "go install from URL — arbitrary code execution via go"},
+	{Regex: `(~/\.config/autostart|/etc/systemd|~/\.bashrc|\$HOME/\.bashrc|~/\.profile|\$HOME/\.profile|/etc/cron|~/\.config/systemd|\$HOME/\.config/systemd)`, Severity: "high", Detail: "writing to autostart/systemd/profile — persistence mechanism", benignInPkgdir: true},
 }
 
 // activePatterns is initialized once by initHeuristics.
@@ -90,7 +96,7 @@ func compilePatterns(patterns []HeuristicPattern) []compiledPattern {
 			fmt.Fprintf(os.Stderr, "wAURden: invalid heuristic regex %q: %v\n", p.Regex, err)
 			continue
 		}
-		out = append(out, compiledPattern{re: re, severity: p.Severity, detail: p.Detail})
+		out = append(out, compiledPattern{re: re, severity: p.Severity, detail: p.Detail, benignInPkgdir: p.benignInPkgdir})
 	}
 	return out
 }
