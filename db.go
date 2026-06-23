@@ -28,6 +28,12 @@ type DBRecord struct {
 	// KnownCommitters is a JSON []string of git author emails seen across all
 	// prior scans of this package. See trackNewCommitters.
 	KnownCommitters string
+	// AcknowledgedHash is the pkgbuild_hash the user explicitly accepted via the
+	// gate override or `waurden allow`. The gate honours it only while it equals
+	// the current pf.Hash; any PKGBUILD edit changes the hash and voids the ack.
+	// Written only by storeAcknowledgement, never by upsertRecord, so a routine
+	// re-scan leaves it untouched.
+	AcknowledgedHash string
 }
 
 const schema = `
@@ -44,10 +50,11 @@ CREATE TABLE IF NOT EXISTS packages (
     summary          TEXT,
     findings         TEXT,
     source_analyzed  TEXT,
-    provider         TEXT,
-    maintainer       TEXT,
-    prev_maintainer  TEXT,
-    known_committers TEXT
+    provider          TEXT,
+    maintainer        TEXT,
+    prev_maintainer   TEXT,
+    known_committers  TEXT,
+    acknowledged_hash TEXT
 );`
 
 func openDB(path string) (*sql.DB, error) {
@@ -74,6 +81,7 @@ func migrateColumns(db *sql.DB) error {
 		`ALTER TABLE packages ADD COLUMN maintainer TEXT`,
 		`ALTER TABLE packages ADD COLUMN prev_maintainer TEXT`,
 		`ALTER TABLE packages ADD COLUMN known_committers TEXT`,
+		`ALTER TABLE packages ADD COLUMN acknowledged_hash TEXT`,
 	}
 	for _, stmt := range alters {
 		if _, err := db.Exec(stmt); err != nil {
@@ -91,14 +99,15 @@ func lookupRecord(db *sql.DB, name string) (*DBRecord, error) {
 		COALESCE(helper_files,''), COALESCE(source_hashes,''), COALESCE(diff,''),
 		COALESCE(verdict,''), COALESCE(confidence,0), COALESCE(summary,''),
 		COALESCE(findings,''), COALESCE(source_analyzed,''), COALESCE(provider,''),
-		COALESCE(maintainer,''), COALESCE(known_committers,'')
+		COALESCE(maintainer,''), COALESCE(known_committers,''),
+		COALESCE(acknowledged_hash,'')
 		FROM packages WHERE name = ?`, name)
 
 	var r DBRecord
 	err := row.Scan(&r.Name, &r.LastScanned, &r.PKGBUILDHash, &r.PKGBUILDText,
 		&r.HelperFiles, &r.SourceHashes, &r.Diff, &r.Verdict, &r.Confidence,
 		&r.Summary, &r.Findings, &r.SourceAnalyzed, &r.Provider,
-		&r.Maintainer, &r.KnownCommitters)
+		&r.Maintainer, &r.KnownCommitters, &r.AcknowledgedHash)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -115,6 +124,20 @@ func lookupRecord(db *sql.DB, name string) (*DBRecord, error) {
 // without mutating the DB first.
 func forgetRecord(db *sql.DB, name string) (int64, error) {
 	res, err := db.Exec(`UPDATE packages SET pkgbuild_hash='' WHERE name = ?`, name)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// storeAcknowledgement pins the user's acceptance of a specific PKGBUILD hash.
+// It is deliberately separate from upsertRecord: a routine scan's upsert never
+// names acknowledged_hash, so the ack survives re-scans, and only an explicit
+// gate override or `waurden allow` (which call this) can set it. The row is
+// expected to already exist (analyze()/storeVerdict ran this same invocation);
+// if it does not, RowsAffected is 0 and the caller can surface that.
+func storeAcknowledgement(db *sql.DB, name, hash string) (int64, error) {
+	res, err := db.Exec(`UPDATE packages SET acknowledged_hash=? WHERE name = ?`, hash, name)
 	if err != nil {
 		return 0, err
 	}

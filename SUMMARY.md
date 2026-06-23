@@ -35,15 +35,21 @@ obviously a benign removal rather than a persistence write. Repeated hits on one
 (Note: the built-in persistence regex still false-positives on `$pkgdir`-scoped removals; tightening
 it — e.g. ignoring `rm`/`${pkgdir}` contexts — is a separate follow-up, not done here.)
 
-**Next planned feature (designed, not yet built): gate exceptions via hash-pinned acknowledgement** —
-see CLAUDE.md §10 "Gate exceptions". A user can permanently accept a blocked package, but only for the
-exact reviewed `pkgbuild_hash`; any PKGBUILD change voids the ack and forces a re-scan (preserves
-Atomic-Arch protection — no by-name allowlist). Acceptance friction is tiered: `malicious` with
-confidence ≥ 0.9 requires typing `I accept the risk`; otherwise plain `[y/N]`. Adds an
-`acknowledged_hash` column (owned by a separate `storeAcknowledgement` writer, kept out of
-`upsertRecord` so normal scans don't clobber it) and a `waurden allow <DIR>` command as the non-TTY
-escape hatch for the makepkg hook. Tighten the `${pkgdir}`/`rm` persistence regex first/in parallel,
-else the heuristic's flat 0.95 confidence makes the heavy prompt fire on the google-chrome FP.
+Latest changeset (DONE, two patches): **gate exceptions via hash-pinned acknowledgement** (CLAUDE.md
+§10) plus its prerequisite **persistence-regex tightening**. (Patch A) `heuristicCheck` now skips the
+persistence pattern's match when the offending line is a packaging op rather than a live-system write
+— a removal (`rm …`) or a `${pkgdir}`/`${srcdir}`-scoped path — via a new `benignInPkgdir` flag on the
+persistence built-in and a `benignPkgdirContext` helper. RE2 has no lookbehind, so this is a per-line
+context filter, not a regex rewrite; `builtinPatterns` is now named-field literals. Verified: google-
+chrome's `rm -f "${pkgdir}/etc/cron.daily/…"` → OK, while a real `> /etc/cron.d/backdoor` still blocks.
+(Patch B) Added `acknowledged_hash` column (migrated via `ALTER TABLE`, read in `lookupRecord`,
+written **only** by a new `storeAcknowledgement` UPDATE — kept out of `upsertRecord` so routine
+re-scans never clobber it). The gate's block path gains a pure-hash short-circuit that runs even with
+no TTY (`existing.AcknowledgedHash == pf.Hash` → allow), tiered interactive override (`malicious` ≥0.9
+requires typing `I accept the risk`; else `[y/N]`), and a `Remember this version? [Y/n]` persist step.
+New `waurden allow [DIR]` command is the non-TTY recovery path (scan → typed confirm on a TTY → store
+ack). Verified end-to-end: ack short-circuits a re-gate; a PKGBUILD edit voids it; `forget` clears the
+verdict cache but the ack survives (independent columns). `pf.Name=="unknown"` skips all ack logic.
 
 Latest changeset (DONE): **cache invalidation & version reporting** (CLAUDE.md §10). (1) `analyze()`
 now takes `force bool` and its cache-hit guard keys on provider/model as well as hash —
