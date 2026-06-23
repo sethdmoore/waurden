@@ -8,7 +8,9 @@ import (
 )
 
 func runGate(cfg Config, db *sql.DB, pf PackageFiles) (Verdict, bool, error) {
-	v, err := analyze(cfg, db, pf)
+	// gate never force-rescans: the makepkg hook passes no flags, and the cache is
+	// the whole point of the fast path. scan --force is the re-scan entry point.
+	v, err := analyze(cfg, db, pf, false)
 	if err != nil {
 		return v, false, err
 	}

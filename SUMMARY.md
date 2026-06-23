@@ -45,13 +45,18 @@ confidence ≥ 0.9 requires typing `I accept the risk`; otherwise plain `[y/N]`.
 escape hatch for the makepkg hook. Tighten the `${pkgdir}`/`rm` persistence regex first/in parallel,
 else the heuristic's flat 0.95 confidence makes the heavy prompt fire on the google-chrome FP.
 
-Next planned changeset (designed, not built): **cache invalidation & version reporting** — see
-CLAUDE.md §10 "Cache invalidation & version reporting". (1) Add provider/model to the `analyze()`
-cache-hit guard so switching models invalidates a stale verdict; (2) `scan --force` (and an optional
-`forget <pkg>` that blanks `pkgbuild_hash` rather than deleting the row, to preserve
-`known_committers`/`acknowledged_hash`) to re-scan without wiping the DB; (3) expose the commit SHA in
-`waurden version` via `runtime/debug.ReadBuildInfo()` (`vcs.revision`). Items 1–2 share the cache-hit
-code; item 3 is independent and small.
+Latest changeset (DONE): **cache invalidation & version reporting** (CLAUDE.md §10). (1) `analyze()`
+now takes `force bool` and its cache-hit guard keys on provider/model as well as hash —
+`existing.Provider == providerStr` (the same `"<provider>/<model>"` string `storeVerdict` writes), so
+switching models is a cache miss that re-scans and overwrites the row (no migration; `base_url` and
+prompt version intentionally not keyed). (2) `scan --force` (alias `--no-cache`) threads `force=true`
+to skip the cache read; `gate` always passes `false`. `waurden forget <pkgname>` blanks `pkgbuild_hash`
+via `forgetRecord` (`UPDATE … SET pkgbuild_hash=''`) instead of deleting, preserving `known_committers`
+and the future `acknowledged_hash`. (3) `waurden version` calls `versionString()`, reading
+`vcs.revision`/`vcs.time`/`vcs.modified` from `debug.ReadBuildInfo()` →
+`wAURden 0.1.0 (b192e83, 2026-06-22, dirty)`, falling back to the bare release number when unstamped.
+Verified end-to-end with the static provider: a `WAURDEN_MODEL` change re-stored the row as
+`static/foo` (proving model-change invalidation), `forget` clears correctly, `--force` re-scans.
 
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.

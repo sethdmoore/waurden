@@ -202,8 +202,18 @@ func computeDiff(oldText, newText string) string {
 	return sb.String()
 }
 
-func analyze(cfg Config, db *sql.DB, pf PackageFiles) (Verdict, error) {
-	// Cache: same hash = same content = reuse verdict.
+func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, error) {
+	// providerStr matches the value storeVerdict persists, so it can be compared
+	// against the cached row below.
+	providerStr := cfg.Provider
+	if cfg.Model != "" {
+		providerStr = cfg.Provider + "/" + cfg.Model
+	}
+
+	// Cache: same hash AND same provider/model = same content scanned by the same
+	// engine = reuse verdict. A provider/model change is treated as a cache miss so
+	// a verdict from a weaker model (or static heuristics) is re-scanned by the new
+	// one rather than re-served. force skips the read entirely (scan --force).
 	// Skip if name is "unknown" — pkgname parse failed, bucket is unreliable.
 	var existing *DBRecord
 	if pf.Name != "unknown" {
@@ -212,7 +222,7 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles) (Verdict, error) {
 		if err != nil {
 			return Verdict{}, fmt.Errorf("db lookup: %w", err)
 		}
-		if existing != nil && existing.PKGBUILDHash == pf.Hash {
+		if !force && existing != nil && existing.PKGBUILDHash == pf.Hash && existing.Provider == providerStr {
 			var v Verdict
 			v.Verdict = existing.Verdict
 			v.Confidence = existing.Confidence

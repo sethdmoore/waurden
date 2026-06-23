@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 )
 
@@ -49,13 +50,15 @@ func main() {
 
 	switch cmd {
 	case "version":
-		fmt.Printf("wAURden %s\n", version)
+		fmt.Println(versionString())
 	case "scan":
 		runScan(args)
 	case "gate":
 		runGateCmd(args)
 	case "show":
 		runShow(args)
+	case "forget":
+		runForget(args)
 	case "configure":
 		runConfigureCmd()
 	case "install-hooks":
@@ -74,12 +77,57 @@ func printUsage() {
 
 Usage:
   waurden configure          set up an LLM provider (required before first use)
-  waurden scan [DIR]         scan package dir (default: .), print report
+  waurden scan [DIR] [--force]  scan package dir (default: .), print report
+                             --force (alias --no-cache) ignores the cached verdict
   waurden gate [DIR]         scan + enforce policy; exit 1 if blocked
   waurden show <pkgname>     print stored DB record for a package
+  waurden forget <pkgname>   drop the cached verdict so the next scan re-runs
   waurden install-hooks      install makepkg and pacman hooks (requires root)
   waurden uninstall-hooks    remove installed hooks (requires root)
   waurden version            print version`)
+}
+
+// versionString augments the human release number with the VCS revision Go
+// stamps into the binary when built inside the module's git repo (default
+// -buildvcs). For a waurden-git build from a clone this yields e.g.
+// "wAURden 0.1.0 (abc1234, 2026-06-20, dirty)". Falls back to the bare release
+// number when no VCS info is present (e.g. `go run`, or a stripped build).
+func versionString() string {
+	base := "wAURden " + version
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return base
+	}
+	var rev, vcsTime string
+	var modified bool
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.time":
+			vcsTime = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return base
+	}
+	if len(rev) > 7 {
+		rev = rev[:7]
+	}
+	parts := []string{rev}
+	if vcsTime != "" {
+		// vcs.time is RFC3339 (e.g. 2026-06-20T12:00:00Z); keep just the date.
+		if i := strings.IndexByte(vcsTime, 'T'); i > 0 {
+			vcsTime = vcsTime[:i]
+		}
+		parts = append(parts, vcsTime)
+	}
+	if modified {
+		parts = append(parts, "dirty")
+	}
+	return base + " (" + strings.Join(parts, ", ") + ")"
 }
 
 func exitUnconfigured(isGate bool) {
@@ -109,8 +157,14 @@ func openDBFromConfig(cfg Config) (*sql.DB, error) {
 
 func runScan(args []string) {
 	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+	force := false
+	for _, a := range args {
+		switch a {
+		case "--force", "--no-cache":
+			force = true
+		default:
+			dir = a
+		}
 	}
 
 	cfg, configFound, err := loadConfig()
@@ -143,7 +197,7 @@ func runScan(args []string) {
 	printAURWarnings(pf.Name, aurInfo)
 	trackNewCommitters(&pf, existing)
 
-	v, err := analyze(cfg, db, pf)
+	v, err := analyze(cfg, db, pf, force)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: scan error: %v\n", err)
 		os.Exit(1)
@@ -307,6 +361,42 @@ func runShow(args []string) {
 			}
 		}
 	}
+}
+
+// runForget clears the cached verdict for a package so the next scan re-runs,
+// without wiping the row. It blanks pkgbuild_hash (forcing a cache miss) rather
+// than deleting the row, so committer history (known_committers) and any future
+// acknowledged_hash survive. To re-scan in place use `scan --force` instead.
+func runForget(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "wAURden: forget requires a package name")
+		os.Exit(1)
+	}
+	pkgname := args[0]
+
+	cfg, _, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	db, err := openDBFromConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	n, err := forgetRecord(db, pkgname)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: forget error: %v\n", err)
+		os.Exit(1)
+	}
+	if n == 0 {
+		fmt.Printf("No record found for package: %s\n", pkgname)
+		return
+	}
+	fmt.Printf("Cleared cached verdict for %s; the next scan will re-run.\n", pkgname)
 }
 
 // configExistsAnywhere checks for a valid config file, accounting for the fact
