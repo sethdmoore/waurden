@@ -229,7 +229,7 @@ func runScan(args []string) {
 		os.Exit(0)
 	}
 
-	printReport(os.Stdout, pf.Name, v, cfg.Provider)
+	printReport(os.Stdout, pf.Name, v, providerLabel(cfg))
 }
 
 func runGateCmd(args []string) {
@@ -305,7 +305,7 @@ func runGateCmd(args []string) {
 	}
 
 	// Anything else (suspicious, malicious): show the report.
-	printReport(os.Stderr, pf.Name, v, cfg.Provider)
+	printReport(os.Stderr, pf.Name, v, providerLabel(cfg))
 
 	if blocked {
 		// Hash-pinned acknowledgement short-circuit. This is a pure hash compare,
@@ -501,7 +501,7 @@ func runAllow(args []string) {
 			fmt.Fprintf(os.Stderr, "wAURden: scan did not complete (%v); cannot acknowledge an unscanned package.\n", v.Summary)
 			os.Exit(1)
 		}
-		printReport(os.Stderr, pf.Name, v, cfg.Provider)
+		printReport(os.Stderr, pf.Name, v, providerLabel(cfg))
 	}
 
 	// Symmetry with the gate's high-friction override: require the typed phrase

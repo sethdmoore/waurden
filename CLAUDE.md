@@ -115,6 +115,7 @@ type Config struct {
     Provider    string   `toml:"provider"`        // anthropic|openai|static
     Model       string   `toml:"model"`
     BaseURL     string   `toml:"base_url"`
+    ScanMode    string   `toml:"scan_mode"`       // full|heuristics|llm (default full)
     APIKeyEnv   string   `toml:"api_key_env"`
     Timeout     int      `toml:"timeout_seconds"`
     DBPath      string   `toml:"db_path"`

@@ -32,6 +32,12 @@ provider = "static"
 # api_key = "sk-or-..."
 # api_key_env = "OPENROUTER_API_KEY"
 
+# Which analysis engines run.
+# full       — built-in heuristics first, then the LLM (default)
+# heuristics — heuristic patterns only, never call the LLM (fast, offline, coarse)
+# llm        — skip the built-in heuristics, rely on the LLM only
+# scan_mode = "full"
+
 # Request timeout in seconds.
 timeout_seconds = 60
 

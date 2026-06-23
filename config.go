@@ -12,8 +12,9 @@ type Config struct {
 	Provider    string   `toml:"provider"        envconfig:"PROVIDER"`
 	Model       string   `toml:"model"           envconfig:"MODEL"`
 	BaseURL     string   `toml:"base_url"        envconfig:"BASE_URL"`
+	ScanMode    string   `toml:"scan_mode"       envconfig:"SCAN_MODE"` // full|heuristics|llm (default full)
 	APIKey      string   `toml:"api_key"         envconfig:"API_KEY"`
-	APIKeyEnv   string   `toml:"api_key_env"     envconfig:"API_KEY_ENV"`   // fallback: read key from this env var
+	APIKeyEnv   string   `toml:"api_key_env"     envconfig:"API_KEY_ENV"` // fallback: read key from this env var
 	Timeout     int      `toml:"timeout_seconds" envconfig:"TIMEOUT"`
 	DBPath      string   `toml:"db_path"         envconfig:"DB_PATH"`
 	BlockOn     []string `toml:"block_on"        envconfig:"BLOCK_ON"`

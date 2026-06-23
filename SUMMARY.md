@@ -64,5 +64,30 @@ and the future `acknowledged_hash`. (3) `waurden version` calls `versionString()
 Verified end-to-end with the static provider: a `WAURDEN_MODEL` change re-stored the row as
 `static/foo` (proving model-change invalidation), `forget` clears correctly, `--force` re-scans.
 
+Latest changeset (DONE): **configurable scan modes + a truthful provider label.** New `scan_mode`
+config key (`Config.ScanMode`, env `WAURDEN_SCAN_MODE`) with three values, normalized by `scanMode()`
+in analyze.go: `full` (default — heuristic pre-filter then LLM), `heuristics` (pre-filter only, never
+touches the network — fast/offline/coarse, returns `ok` @0.50 with an explicit "LLM not consulted"
+summary), and `llm` (skips the built-in pre-filter, relies on the model alone). `analyze()` gates the
+pre-filter on `mode != llm` and returns early in heuristics mode before `callProvider`. Cache
+correctness: the verdict cache key's provider component now comes from `engineString(cfg)` (used by
+both the cache-read in `analyze()` and `storeVerdict`), which returns `"static (heuristics)"` in
+heuristics mode and `"<provider>/<model>"` otherwise — so switching into/out of heuristics-only is a
+cache miss that re-scans (no schema change). Known minor gap: full↔llm share the LLM identity and
+differ only for heuristic-blockable inputs; use `scan --force` across that switch. The configure
+wizard prompts for the mode (LLM providers only; static is heuristics by definition) and writes
+`scan_mode` when non-default; documented in `config.example.toml` and CLAUDE.md §6.
+
+Second half of that changeset: the scan/gate report's `Provider:` line now renders `providerLabel(cfg)`
+instead of the bare `cfg.Provider`. The OpenAI-compatible path fronts many services via `base_url`, so
+"openai" was misleading; `serviceFromBaseURL` maps the host (openrouter.ai→`openrouter`,
+generativelanguage…→`gemini`, api.openai.com/api.anthropic.com→themselves, else the raw host incl.
+port for localhost) and the label appends the model → e.g. `Provider: openrouter: foo-model`.
+heuristics-only shows `static (heuristics, no LLM)`; the `static`/`mock` provider shows
+`static (heuristics)`. Display only — the DB `provider` column still stores `engineString` for cache
+keying; `show` still prints the stored value. Verified end-to-end with the binary: openrouter label,
+heuristics-mode @0.50 with no network, heuristics-mode still blocks the malicious sample, llm-mode
+bypasses the pre-filter (hits the network), and a heuristics→full switch invalidates the cache.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.

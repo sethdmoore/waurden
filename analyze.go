@@ -25,6 +25,48 @@ type Verdict struct {
 	ScanFailed     bool      `json:"-"` // set when scan failed; distinct from a real malicious verdict
 }
 
+// Scan modes select which analysis engines run. Default is full (heuristic
+// pre-filter, then the LLM). heuristics-only never touches the network — a fast,
+// offline, coarse check. llm-only skips the built-in pre-filter and relies
+// entirely on the model.
+const (
+	scanModeFull       = "full"       // heuristics + LLM (default)
+	scanModeHeuristics = "heuristics" // heuristics only, no LLM / network
+	scanModeLLM        = "llm"        // LLM only, skip the heuristic pre-filter
+)
+
+// scanMode normalizes cfg.ScanMode to one of the canonical constants. An unset
+// or unrecognized value means full mode.
+func scanMode(cfg Config) string {
+	switch strings.ToLower(strings.TrimSpace(cfg.ScanMode)) {
+	case "heuristics", "heuristics-only", "heuristic", "static":
+		return scanModeHeuristics
+	case "llm", "llm-only", "ai":
+		return scanModeLLM
+	default:
+		return scanModeFull
+	}
+}
+
+// engineString identifies the engine that produced (or would produce) a verdict.
+// It is the provider component of the verdict cache key and is what gets stored
+// in the DB provider column. In heuristics-only mode the LLM is never consulted,
+// so the identity is the heuristics engine; this also makes a switch to/from a
+// mode that DOES call the LLM a cache miss (different engine → re-scan) without
+// needing a schema change. (full and llm-only share the LLM identity — they
+// differ only for inputs a built-in heuristic would block; re-scan across that
+// switch with `scan --force` if it matters.)
+func engineString(cfg Config) string {
+	if scanMode(cfg) == scanModeHeuristics {
+		return "static (heuristics)"
+	}
+	s := cfg.Provider
+	if cfg.Model != "" {
+		s = cfg.Provider + "/" + cfg.Model
+	}
+	return s
+}
+
 func heuristicCheck(content string) *Verdict {
 	var findings []Finding
 
@@ -226,11 +268,10 @@ func computeDiff(oldText, newText string) string {
 
 func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, error) {
 	// providerStr matches the value storeVerdict persists, so it can be compared
-	// against the cached row below.
-	providerStr := cfg.Provider
-	if cfg.Model != "" {
-		providerStr = cfg.Provider + "/" + cfg.Model
-	}
+	// against the cached row below. It also encodes the scan mode (heuristics-only
+	// has a distinct identity) so changing modes invalidates a stale verdict.
+	providerStr := engineString(cfg)
+	mode := scanMode(cfg)
 
 	// Cache: same hash AND same provider/model = same content scanned by the same
 	// engine = reuse verdict. A provider/model change is treated as a cache miss so
@@ -257,12 +298,32 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 		}
 	}
 
-	// Heuristic pre-filter — always runs, all providers
-	if hv := heuristicCheck(pf.PKGBUILDSrc); hv != nil {
-		if err := storeVerdict(cfg, db, pf, *hv, ""); err != nil {
+	// Heuristic pre-filter — runs in full and heuristics-only modes; skipped only
+	// in llm-only mode, where the user has opted to rely on the model alone.
+	if mode != scanModeLLM {
+		if hv := heuristicCheck(pf.PKGBUILDSrc); hv != nil {
+			if err := storeVerdict(cfg, db, pf, *hv, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "wAURden: db store error: %v\n", err)
+			}
+			return *hv, nil
+		}
+	}
+
+	// heuristics-only mode never consults the LLM: a clean pre-filter is the
+	// verdict. Confidence is deliberately modest — heuristics are a coarse filter,
+	// not a deep audit — so the report doesn't overclaim a clean bill of health.
+	if mode == scanModeHeuristics {
+		v := Verdict{
+			Verdict:        "ok",
+			Confidence:     0.5,
+			Findings:       []Finding{},
+			Summary:        "No built-in heuristic patterns matched. Heuristics-only mode — the LLM was not consulted, so this is a coarse pattern check, not a deep audit.",
+			SourceAnalyzed: "pkgbuild-only",
+		}
+		if err := storeVerdict(cfg, db, pf, v, ""); err != nil {
 			fmt.Fprintf(os.Stderr, "wAURden: db store error: %v\n", err)
 		}
-		return *hv, nil
+		return v, nil
 	}
 
 	diff := ""
@@ -302,10 +363,7 @@ func storeVerdict(cfg Config, db *sql.DB, pf PackageFiles, v Verdict, diff strin
 	findingsJSON, _ := json.Marshal(v.Findings)
 	helperJSON, _ := json.Marshal(pf.HelperFiles)
 
-	providerStr := cfg.Provider
-	if cfg.Model != "" {
-		providerStr = cfg.Provider + "/" + cfg.Model
-	}
+	providerStr := engineString(cfg)
 
 	return upsertRecord(db, DBRecord{
 		Name:            pf.Name,

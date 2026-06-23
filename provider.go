@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,6 +27,53 @@ func callProvider(cfg Config, systemPrompt, userContent string) (string, error) 
 		return callMock(cfg, userContent)
 	default:
 		return "", fmt.Errorf("unknown provider %q (valid: anthropic, openai, static)", cfg.Provider)
+	}
+}
+
+// providerLabel renders the active backend for the scan/gate report. The
+// OpenAI-compatible path (provider="openai") fronts many services via base_url —
+// OpenRouter, Ollama, Gemini, a local server — so "openai" alone is misleading.
+// Infer the service from the base_url host and append the model, e.g.
+// "openrouter: deepseek/deepseek-chat".
+func providerLabel(cfg Config) string {
+	if scanMode(cfg) == scanModeHeuristics {
+		return "static (heuristics, no LLM)"
+	}
+	switch cfg.Provider {
+	case "static", "mock":
+		return "static (heuristics)"
+	}
+	service := cfg.Provider
+	if cfg.BaseURL != "" {
+		service = serviceFromBaseURL(cfg.BaseURL)
+	}
+	if cfg.Model != "" {
+		return service + ": " + cfg.Model
+	}
+	return service
+}
+
+// serviceFromBaseURL maps a base_url to a friendly service name for display.
+// Known hosts get a recognizable label; anything else falls back to the host
+// itself (including port, e.g. "localhost:11434") so the user can still tell
+// what they hit.
+func serviceFromBaseURL(baseURL string) string {
+	host := baseURL
+	if u, err := url.Parse(baseURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	h := strings.ToLower(host)
+	switch {
+	case strings.Contains(h, "openrouter.ai"):
+		return "openrouter"
+	case strings.Contains(h, "generativelanguage.googleapis.com"):
+		return "gemini"
+	case strings.Contains(h, "api.openai.com"):
+		return "openai"
+	case strings.Contains(h, "api.anthropic.com"):
+		return "anthropic"
+	default:
+		return host
 	}
 }
 
