@@ -108,5 +108,17 @@ Verified: heuristic block overrides a poisoned cached `ok`; clean heuristics sti
 OK one-liner + scanning line appear on the right paths. **Existing poisoned rows are not retroactively
 healed** — clear them once with `waurden forget <pkg>` (or let the PKGBUILD hash change).
 
+New policy doc `MIGRATIONS.md` (plan-only, no code yet): **never wipe the user's DB for a schema
+change.** Designs a `PRAGMA user_version` migration runner — append-only ordered `[]migration`, each
+applied once in a transaction, runner fails closed. Key move: freeze today's idempotent
+`CREATE TABLE IF NOT EXISTS` + additive `ALTER` logic as migration **v1 (baseline)** so both a fresh
+file and an already-migrated `v0` deployed file converge to the same shape; from v1 on, strict
+versioned steps (no `IF NOT EXISTS`, no duplicate-swallowing). Covers additive columns, the SQLite
+table-rebuild dance for non-additive changes/backfills, indexes, the per-change checklist, and
+upgrade-path testing (old file + new binary, not just fresh DB). §7 flags the lingering "delete the
+DB/row" advice in CLAUDE.md §9 and this file (above) for a later scrub toward `waurden forget` /
+`scan --force` — both already non-destructive. Implementing the runner in `db.go` is a deferred
+follow-up (scope was plan-only).
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
