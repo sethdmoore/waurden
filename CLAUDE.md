@@ -4,18 +4,16 @@
 
 ## Workflow rules (follow every session, in order)
 
-1. **`git pull github` before touching any file.** The user applies patches via `git am` and pushes to GitHub; the local tree may be behind. Editing stale files produces conflicting patches.
+1. **`git pull github` before touching any file.** The local tree may be behind GitHub; editing stale files produces conflicts.
 
-2. **Generate a patch after every changeset** so the user can import it with `git am`:
-   - Stage changed files explicitly — never `git add -A`. Exclude `.claude/`, compiled binaries, and the patch file itself.
-   - `git commit -m "Subject (≤72 chars)\n\nBody: what changed and why."`
-   - `git format-patch HEAD~1 --stdout > 0001-<short-slug>.patch`
-   - `git reset HEAD~1 --mixed` (un-commits; files return to staged/unstaged state)
-   - The `.patch` file is the deliverable. The temporary commit disappears from history.
+2. **Commit and push directly to this repo (wAURden is a blessed repo).** After a changeset:
+   - Stage changed files explicitly — never `git add -A`. Exclude `.claude/` and compiled binaries.
+   - `git commit -m "Subject (≤72 chars)\n\nBody: what changed and why."` — end the message with the `Co-Authored-By: Claude …` trailer.
+   - `git push github HEAD:main` (or a branch + PR if the change warrants review).
+   - Only push to **blessed repos** (wAURden). Never push to a repo that hasn't been explicitly blessed; for those, fall back to the patch workflow below.
+   - **Patch fallback** (when direct push isn't set up / not a blessed repo): `git format-patch HEAD~1 --stdout > 0001-<short-slug>.patch` as the deliverable, then `git reset HEAD~1 --mixed`. Delete patch files once they've landed in history.
 
-3. **Never run `git commit` or `git push` for any other purpose.**
-
-4. **Update `SUMMARY.md`** (2-paragraph max) at the end of any session with meaningful progress. A fresh session reads it first to understand current state without re-reading this file.
+3. **Update `SUMMARY.md`** (2-paragraph max) at the end of any session with meaningful progress. A fresh session reads it first to understand current state without re-reading this file.
 
 ---
 
@@ -448,3 +446,65 @@ read. (Items 1–2 share that cache-hit code path — implement them together; i
   enabled (default). Verify `waurden-git`'s PKGBUILD `build()` runs `go build` in the clone. Fall back
   to `-ldflags "-X main.commit=<sha>"` only if a build path strips the stamp.
 - Keep the hard-coded `version` const as the human release number; the SHA augments it.
+
+### Gate output: clean per-package lines + end-of-run recap (NOT YET IMPLEMENTED — next session)
+
+**Motivation (from a real `yay -Syu` run):** the user saw five `scanning … via <model>…` lines
+fly by, then only two `— OK` lines, then the pacman install output flooded the terminal and buried
+the rest. Nothing was skipped — the confusion is a **visibility/ordering** problem, and the model
+string is repeated on every line for no benefit (there is no per-package model control).
+
+**Root-cause fact (drives the whole design):** `waurden gate <dir>` runs **once per package, as its
+own process**, invoked by the `makepkg.conf.d` hook — and under `yay` these run **concurrently**
+(yay's batched source/verify phase). Each process only ever sees its own `$PWD/PKGBUILD`. Therefore a
+single grouped *pre-scan* header (`scanning the following packages: A, B, C`) is **impossible** — no
+process knows the other package names. The grouped "everything scanned OK" recap must live **after**
+the builds, not before. User picked this shape ("Clean lines + end summary") over per-package-only.
+
+**Part 1 — per-package line cleanup (in `gate`; independent, ship-able alone):**
+- `analyze.go:352` scanning line — drop the model: `wAURden: scanning %s…` (was `scanning %s via %s…`).
+  The model moves to the recap header (Part 2), stated once, not per line.
+- `main.go:305` OK line — drop `providerLabel`, append the info summary:
+  `wAURden: %s — OK (%.2f) %s` = `pf.Name, v.Confidence, truncate(v.Summary)`.
+- **Failure/warn path — the real fix for "some scans never showed completion."** A rate-limited
+  package currently prints a generic, untagged `wAURden WARNING: scan failed…` from
+  `verdictFromOnError` (`analyze.go`), which reads like a crash and scrolls into the install flood.
+  Re-tag it as a per-package terminal line so **every** `scanning X…` has a matching result:
+  `wAURden: %s — could not scan (%s); build allowed (on_error=warn)`. (`on_error=block` keeps its
+  existing hard-block line; the `ScanFailed` display path in `main.go:288-300` is where this is wired.)
+
+**Part 2 — end-of-run recap (implements the §10 `waurden summary` stub above, extended):**
+Runs **once, after all builds**, from the pacman **`PreTransaction`** hook — which fires a single time
+for the `pacman -U` that installs the freshly-built AUR packages (the repo `-Syu` transaction fires it
+too, but none of those packages are in the DB → empty recap → print nothing).
+- **`waurden summary`** (new command; add to `main.go` dispatch + `printUsage()`):
+  - no args → full DB table sorted by `last_scanned` (the existing §10 `### waurden summary` design:
+    `SELECT * FROM packages ORDER BY last_scanned DESC`, `text/tabwriter`).
+  - `--targets` (reads package names on **stdin**) → filtered recap: look each up in the DB, print only
+    rows that exist, render the model **once** in the header, end with `all N packages scanned OK` — or
+    surface any `suspicious`/blocked rows prominently. Example:
+    ```
+    ── wAURden summary · openrouter: qwen3-coder-30b ──
+      faugus-launcher      OK   1.00
+      claude-code          OK   1.00
+      all 5 packages scanned OK
+    ```
+- **Hook change** (`hooks/pacman/waurden.hook`): add `NeedsTargets` (pacman then pipes the exact
+  package list on stdin) and change `Exec = /usr/bin/waurden summary --targets`. Update the
+  `[Action] Description` accordingly. NOTE: the current hook is `Exec = /usr/bin/waurden gate` with no
+  target/PWD PKGBUILD → effectively a no-op today; this repurposes it into something useful.
+
+**Two implementation details (both have existing precedent):**
+1. **Root → user DB.** The hook runs as root; scans wrote to the invoking user's
+   `~/.local/share/waurden/waurden.db`. `summary --targets` must resolve the DB via `$SUDO_USER`'s home
+   — reuse the exact pattern in `configExistsAnywhere` (`main.go:538-548`).
+2. **Name matching / empty suppression.** DB is keyed by `pf.Name` (pkgname); pacman targets are
+   pkgnames → match directly, with a pkgbase fallback for split packages. If no target is in the DB,
+   print nothing (keep repo-only transactions silent).
+
+**Shipping order / gotchas:**
+- `waurden summary` must land before the hook references it.
+- `install-hooks`/`hookStatus` must learn the new pacman-hook content (the sha256 comparison around
+  `main.go:556+`) so an upgrade re-installs the changed hook.
+- The recap depends on the pacman hook being installed (`sudo waurden install-hooks`). makepkg-hook-only
+  users get Part 1's clean lines but no recap — state this in the README.

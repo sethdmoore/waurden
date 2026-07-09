@@ -120,5 +120,23 @@ DB/row" advice in CLAUDE.md §9 and this file (above) for a later scrub toward `
 `scan --force` — both already non-destructive. Implementing the runner in `db.go` is a deferred
 follow-up (scope was plan-only).
 
+Latest (PLAN ONLY, no code yet — see CLAUDE.md §10 "Gate output: clean per-package lines + end-of-run
+recap"): a real `yay -Syu` showed five `scanning … via <model>…` lines but only two `— OK` lines before
+the pacman install flood buried the rest, and the model string repeats pointlessly on every line. Root
+cause: `waurden gate` runs **once per package, as its own concurrent process** (makepkg.conf.d hook), so
+no process sees the full package list — a grouped *pre-scan* header is impossible; the "all OK" recap must
+come **after** the builds. User chose "clean lines + end summary." Plan, in two independent parts:
+(1) in `gate`, drop the model from the scanning line (`analyze.go:352`) and the OK line (`main.go:305`),
+append the info `Summary` to the OK line, and re-tag the `on_error` fail path as a per-package result
+(`... — could not scan (…); build allowed`) so every `scanning X…` gets a matching terminal line — this
+is the actual fix for "some scans never showed completion" (they printed an untagged WARNING that scrolled
+away). (2) Implement the §10 `waurden summary` command (no-arg full table + `--targets` stdin-filtered
+recap that names the model **once** and ends with `all N scanned OK`), driven **once** from the pacman
+`PreTransaction` hook with `NeedsTargets`; resolve the user DB via `$SUDO_USER` like
+`configExistsAnywhere` (main.go:538-548), match pacman pkgnames to DB keys (pkgbase fallback), and print
+nothing when no target is in the DB. Ship `summary` before the hook; update `install-hooks`/`hookStatus`
+sha256 so the changed hook re-installs. This session also committed the workflow-rules refresh in CLAUDE.md
+(patch workflow → direct push to the blessed repo).
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
