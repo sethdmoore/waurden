@@ -94,8 +94,9 @@ Usage:
                              --force (alias --no-cache) ignores the cached verdict
   waurden gate [DIR]         scan + enforce policy; exit 1 if blocked
   waurden show <pkgname>     print stored DB record for a package
-  waurden summary            table of all scanned packages (newest first)
-                             --targets reads pkgnames on stdin (pacman hook use)
+  waurden summary            current verdict per package + recent blocks
+                             --history   full append-only scan/block timeline
+                             --targets   read pkgnames on stdin (pacman hook use)
   waurden allow [DIR]        acknowledge a blocked package for its current
                              PKGBUILD hash (cleared when the PKGBUILD changes)
   waurden forget <pkgname>   drop the cached verdict so the next scan re-runs
@@ -257,6 +258,12 @@ func runScan(args []string) {
 		os.Exit(0)
 	}
 
+	// Record the scan in the append-only history. scan enforces no policy, so
+	// blocked reflects what the gate would do with this verdict (verdict ∈ block_on).
+	if err := recordScan(db, pf.Name, pf.Hash, engineString(cfg), v, policyBlocks(cfg, v)); err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: could not record scan history: %v\n", err)
+	}
+
 	printReport(os.Stdout, pf.Name, v, providerLabel(cfg))
 }
 
@@ -327,6 +334,15 @@ func runGateCmd(args []string) {
 			bufio.NewReader(os.Stdin).ReadString('\n')
 		}
 		os.Exit(0)
+	}
+
+	// Append this scan to the append-only history before any exit, so a block
+	// that scrolls past in the build flood stays durably reviewable via
+	// `waurden summary --history`. blocked here is the policy decision (verdict
+	// ∈ block_on); a later interactive/ack override changes whether the build
+	// proceeds, not the security fact recorded here. Non-fatal.
+	if err := recordScan(db, pf.Name, pf.Hash, engineString(cfg), v, blocked); err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: could not record scan history: %v\n", err)
 	}
 
 	// Clean OK: emit a one-line confirmation so the verdict is visible in the

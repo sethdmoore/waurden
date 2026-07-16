@@ -17,9 +17,13 @@ import (
 // their per-package lines have scrolled past.
 func runSummary(args []string) {
 	targets := false
+	history := false
 	for _, a := range args {
-		if a == "--targets" {
+		switch a {
+		case "--targets":
 			targets = true
+		case "--history":
+			history = true
 		}
 	}
 
@@ -52,6 +56,10 @@ func runSummary(args []string) {
 
 	if targets {
 		summaryTargets(db, cfg)
+		return
+	}
+	if history {
+		summaryHistory(db)
 		return
 	}
 	summaryAll(db)
@@ -136,7 +144,67 @@ func summaryAll(db *sql.DB) {
 	tw.Flush()
 	if n == 0 {
 		fmt.Println("No packages scanned yet.")
+		return
 	}
+
+	// The packages table above is current state (one row per package, overwritten
+	// on re-scan). Surface any recent blocks from the append-only history so a
+	// block that scrolled past in a build is visible without hunting for it.
+	blocks, err := recentScans(db, true, 10)
+	if err == nil && len(blocks) > 0 {
+		fmt.Printf("\nRecent blocks (%d shown, full history: waurden summary --history):\n", len(blocks))
+		for _, e := range blocks {
+			fmt.Printf("  %s  %s  (%.2f)  %s\n", eventDate(e.ScannedAt), e.Package, e.Confidence, truncate(e.Summary))
+		}
+	}
+}
+
+// summaryHistory prints the append-only scan history, newest first — the durable
+// record of every scan and block, which the packages cache cannot keep.
+func summaryHistory(db *sql.DB) {
+	events, err := recentScans(db, false, 200)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db query error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(events) == 0 {
+		fmt.Println("No scans recorded yet.")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "WHEN\tPACKAGE\tVERDICT\tCONF\tBLOCKED\tPROVIDER")
+	for _, e := range events {
+		blocked := ""
+		if e.Blocked {
+			blocked = "BLOCKED"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%.2f\t%s\t%s\n",
+			eventTime(e.ScannedAt), e.Package, strings.ToUpper(e.Verdict), e.Confidence, blocked, e.Provider)
+	}
+	tw.Flush()
+}
+
+// eventDate/eventTime render an RFC3339 timestamp for the history columns:
+// eventDate keeps the date, eventTime keeps date + minute.
+func eventDate(ts string) string {
+	if i := strings.IndexByte(ts, 'T'); i > 0 {
+		return ts[:i]
+	}
+	return ts
+}
+
+func eventTime(ts string) string {
+	// 2026-07-16T17:04:08Z -> 2026-07-16 17:04
+	ts = strings.TrimSuffix(ts, "Z")
+	if i := strings.IndexByte(ts, 'T'); i > 0 {
+		date := ts[:i]
+		rest := ts[i+1:]
+		if len(rest) >= 5 {
+			rest = rest[:5]
+		}
+		return date + " " + rest
+	}
+	return ts
 }
 
 // readTargets reads whitespace-separated package names from r. pacman's

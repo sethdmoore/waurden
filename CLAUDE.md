@@ -81,9 +81,36 @@ CREATE TABLE packages (
     maintainer       TEXT,
     prev_maintainer  TEXT
 );
+
+-- Append-only scan history. packages (above) is a PRIMARY KEY(name) cache that is
+-- upserted on every scan, so it only holds the *latest* verdict per package. The
+-- scans table keeps every scan event, so a block that scrolled past in a build
+-- flood stays durably reviewable (waurden summary --history) and a re-scan never
+-- erases the prior verdict. Relational split: packages = current-state dimension,
+-- scans = event fact table (package REFERENCES packages(name)).
+CREATE TABLE scans (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    package         TEXT NOT NULL,     -- FK → packages(name)
+    scanned_at      TEXT NOT NULL,
+    pkgbuild_hash   TEXT,
+    verdict         TEXT,
+    confidence      REAL,
+    blocked         INTEGER,           -- 1 if verdict ∈ block_on (policy decision)
+    provider        TEXT,
+    source_analyzed TEXT,
+    summary         TEXT,
+    findings        TEXT               -- JSON []Finding
+);
 ```
 
 `pkgbuild_hash` serves as the verdict cache key — skip the LLM call on hash match.
+The `packages` row is the cache; the `scans` row is the durable record. `recordScan`
+appends to `scans` on every gate/scan (including cache hits) and is deliberately kept
+separate from `upsertRecord` so history is never overwritten. `blocked` records the
+policy decision (verdict ∈ `block_on`) at scan time, independent of any later ack/override.
+Review with `waurden summary` (current state + recent blocks) or `waurden summary --history`
+(full timeline). Adding `scans` is an additive migration (`CREATE TABLE IF NOT EXISTS`,
+no wipe) — see `MIGRATIONS.md`.
 
 **Schema changes ship a migration — never tell the user to wipe the DB.** The user's DB holds
 real value (verdict cache, `known_committers` baselines, `acknowledged_hash` exceptions); destroying
@@ -103,8 +130,9 @@ collect.go        gather PKGBUILD + helper files; sha256; extract pkgbase from .
 provider.go       anthropic / openai (+base_url) / static
 analyze.go        build prompt, call provider, parse Verdict JSON
 heuristics.go     built-in patterns + user TOML merge; initHeuristics()
-db.go             open/migrate/upsert/lookup
-gate.go           enforce policy → exit code
+db.go             open/migrate/upsert/lookup; scans history (recordScan/recentScans)
+summary.go        waurden summary: current-state table, --history timeline, --targets recap
+gate.go           enforce policy → exit code; policyBlocks helper
 aur.go            AUR RPC + maintainer profile; orphan/change warnings
 upstream.go       (priority 3) git diff + VirusTotal
 hooks/makepkg.conf.d/00-waurden.conf

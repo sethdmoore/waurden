@@ -15,13 +15,7 @@ func runGate(cfg Config, db *sql.DB, pf PackageFiles) (Verdict, bool, error) {
 		return v, false, err
 	}
 
-	blocked := false
-	for _, b := range cfg.BlockOn {
-		if strings.EqualFold(v.Verdict, b) {
-			blocked = true
-			break
-		}
-	}
+	blocked := policyBlocks(cfg, v)
 
 	for _, w := range cfg.WarnOn {
 		if strings.EqualFold(v.Verdict, w) {
@@ -31,6 +25,17 @@ func runGate(cfg Config, db *sql.DB, pf PackageFiles) (Verdict, bool, error) {
 	}
 
 	return v, blocked, nil
+}
+
+// policyBlocks reports whether a verdict matches the configured block_on set.
+// This is the "would this build be stopped" decision, recorded in scan history.
+func policyBlocks(cfg Config, v Verdict) bool {
+	for _, b := range cfg.BlockOn {
+		if strings.EqualFold(v.Verdict, b) {
+			return true
+		}
+	}
+	return false
 }
 
 func isTTY() bool {

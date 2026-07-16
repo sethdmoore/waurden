@@ -143,5 +143,18 @@ with the static provider: clean OK line, mixed recap surfaces MALICIOUS, repo-on
 warn-path prints one tagged line per scan. Note: DB is keyed by pkgname so split-package pkgbase matching
 is best-effort (direct pkgname match only).
 
+Follow-up (DONE) — **durable scan history, in the DB (no log files).** The `packages` table is a
+PRIMARY KEY(name) verdict *cache* upserted on each scan, so a re-scan overwrote the prior verdict and a
+block that scrolled past in the build flood was unrecoverable. Fix is relational, not a log file: a new
+append-only **`scans`** fact table (`db.go`, additive `CREATE TABLE IF NOT EXISTS` — old DBs gain it with
+no wipe; verified on a realistic prior-schema DB) holding one row per scan event (package FK→packages,
+scanned_at, verdict, confidence, `blocked`, provider, summary, findings). `recordScan` appends on every
+gate/scan (including cache hits), kept separate from `upsertRecord` so history is never clobbered;
+`blocked` = policy decision (verdict ∈ `block_on`, via the new `policyBlocks` helper reused by `runGate`).
+`waurden summary` now shows the current-state packages table **plus a "Recent blocks" footer** from the
+history; `waurden summary --history` prints the full newest-first timeline with a BLOCKED column. Verified:
+re-gating a malicious package keeps both block events in `--history` while `packages` shows one row.
+Rationale: packages = current-state dimension, scans = event fact table — use the DB as a DB.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
