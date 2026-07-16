@@ -5,6 +5,7 @@ Type = Package
 Target = *
 
 [Action]
-Description = wAURden: scanning package install scriptlets...
+Description = wAURden: summarizing scanned packages...
 When = PreTransaction
-Exec = /usr/bin/waurden gate
+Exec = /usr/bin/waurden summary --targets
+NeedsTargets

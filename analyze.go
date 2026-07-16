@@ -225,7 +225,10 @@ func verdictFromOnError(cfg Config, cause error) Verdict {
 			SourceAnalyzed: "none",
 		}
 	default: // "warn"
-		fmt.Fprintf(os.Stderr, "wAURden WARNING: scan failed, build allowed by on_error=warn: %v\n", cause)
+		// No print here: the caller's ScanFailed display path emits a single,
+		// per-package terminal line (e.g. "<pkg> — could not scan …"), so every
+		// "scanning <pkg>…" line gets exactly one matching result. Printing here
+		// too would double it, and this function has no package name to tag with.
 		return Verdict{
 			Verdict:        "ok",
 			ScanFailed:     true,
@@ -349,7 +352,10 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	// This is the point where the terminal otherwise appears to hang under a
 	// makepkg/yay hook — only reached on a cache miss in full/llm mode, so it
 	// fires exactly when the LLM is actually being consulted, not on a cache hit.
-	fmt.Fprintf(os.Stderr, "wAURden: scanning %s via %s…\n", pf.Name, providerLabel(cfg))
+	// The provider/model is deliberately omitted: under yay these gate processes
+	// run concurrently and the model is identical for every package, so repeating
+	// it per line is noise. It is stated once in the end-of-run `summary` recap.
+	fmt.Fprintf(os.Stderr, "wAURden: scanning %s…\n", pf.Name)
 
 	raw, err := callProvider(cfg, systemPrompt, userContent)
 	if err != nil {

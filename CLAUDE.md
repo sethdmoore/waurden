@@ -447,7 +447,7 @@ read. (Items 1–2 share that cache-hit code path — implement them together; i
   to `-ldflags "-X main.commit=<sha>"` only if a build path strips the stamp.
 - Keep the hard-coded `version` const as the human release number; the SHA augments it.
 
-### Gate output: clean per-package lines + end-of-run recap (NOT YET IMPLEMENTED — next session)
+### Gate output: clean per-package lines + end-of-run recap (DONE)
 
 **Motivation (from a real `yay -Syu` run):** the user saw five `scanning … via <model>…` lines
 fly by, then only two `— OK` lines, then the pacman install output flooded the terminal and buried

@@ -120,23 +120,28 @@ DB/row" advice in CLAUDE.md §9 and this file (above) for a later scrub toward `
 `scan --force` — both already non-destructive. Implementing the runner in `db.go` is a deferred
 follow-up (scope was plan-only).
 
-Latest (PLAN ONLY, no code yet — see CLAUDE.md §10 "Gate output: clean per-package lines + end-of-run
-recap"): a real `yay -Syu` showed five `scanning … via <model>…` lines but only two `— OK` lines before
-the pacman install flood buried the rest, and the model string repeats pointlessly on every line. Root
-cause: `waurden gate` runs **once per package, as its own concurrent process** (makepkg.conf.d hook), so
-no process sees the full package list — a grouped *pre-scan* header is impossible; the "all OK" recap must
-come **after** the builds. User chose "clean lines + end summary." Plan, in two independent parts:
-(1) in `gate`, drop the model from the scanning line (`analyze.go:352`) and the OK line (`main.go:305`),
-append the info `Summary` to the OK line, and re-tag the `on_error` fail path as a per-package result
-(`... — could not scan (…); build allowed`) so every `scanning X…` gets a matching terminal line — this
-is the actual fix for "some scans never showed completion" (they printed an untagged WARNING that scrolled
-away). (2) Implement the §10 `waurden summary` command (no-arg full table + `--targets` stdin-filtered
-recap that names the model **once** and ends with `all N scanned OK`), driven **once** from the pacman
-`PreTransaction` hook with `NeedsTargets`; resolve the user DB via `$SUDO_USER` like
-`configExistsAnywhere` (main.go:538-548), match pacman pkgnames to DB keys (pkgbase fallback), and print
-nothing when no target is in the DB. Ship `summary` before the hook; update `install-hooks`/`hookStatus`
-sha256 so the changed hook re-installs. This session also committed the workflow-rules refresh in CLAUDE.md
-(patch workflow → direct push to the blessed repo).
+Latest changeset (DONE — CLAUDE.md §10 "Gate output: clean per-package lines + end-of-run recap"):
+a real `yay -Syu` showed five `scanning … via <model>…` lines but only two `— OK` lines before the
+pacman flood buried the rest. Root cause (unchanged): `waurden gate` runs **once per package as its own
+concurrent process** (makepkg.conf.d hook), so those processes' stderr interleaves with yay's — there is
+no parent to "wait for all threads," and no process sees the full package list, so a grouped pre-scan
+header is impossible. Fix, two parts. **Part 1 (per-package legibility):** the scanning line
+(`analyze.go`) drops the model (`wAURden: scanning <pkg>…`); the gate OK line drops the provider and
+appends a `truncate`d `Summary` (`wAURden: <pkg> — OK (0.50) <summary>`); the `on_error` fail path is
+re-tagged as a per-package terminal line (`<pkg> — could not scan (<cause>); build allowed (on_error=warn)`)
+and the untagged WARNING in `verdictFromOnError` was removed — so **every** `scanning X…` now has exactly
+one matching result line. **Part 2 (recap):** new `waurden summary` command (`summary.go`) — no-arg full
+table (`text/tabwriter`, newest first) to stdout; `--targets` reads pacman's stdin target list, filters to
+DB-known packages, prints the model **once** in a header and ends with `all N package(s) scanned OK` (or
+surfaces non-OK rows). It stays silent when no target is in the DB (repo-only `-Syu`). The pacman hook is
+now real: `Exec = waurden summary --targets` + `NeedsTargets`, fires once PreTransaction; `install-hooks`
+installs **both** hooks (added `pacmanHookPath` = `/etc/pacman.d/hooks/waurden.hook`; `writeFile` now
+MkdirAll's the parent; `hookStatus` sha256 re-installs the changed hook) and `uninstall-hooks` removes
+both. Root→user DB resolves via a shared `effectiveHome()` ($SUDO_USER-aware, refactored out of
+`configExistsAnywhere`) by pointing `HOME` at the invoking user before `loadConfig`. Verified end-to-end
+with the static provider: clean OK line, mixed recap surfaces MALICIOUS, repo-only/empty stdin stay silent,
+warn-path prints one tagged line per scan. Note: DB is keyed by pkgname so split-package pkgbase matching
+is best-effort (direct pkgname match only).
 
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.

@@ -25,6 +25,11 @@ if [ -f "$PWD/PKGBUILD" ] && command -v waurden >/dev/null 2>&1; then
 fi
 `
 
+// pacmanHook fires once per pacman transaction, before it commits. pacman pipes
+// the exact target list on stdin (NeedsTargets); `summary --targets` filters it
+// to packages wAURden actually scanned and prints a single consolidated recap —
+// the end-of-run report that survives after the concurrent per-package makepkg
+// gate lines have scrolled past. A repo-only `-Syu` matches nothing → no output.
 const pacmanHook = `[Trigger]
 Operation = Install
 Operation = Upgrade
@@ -32,10 +37,14 @@ Type = Package
 Target = *
 
 [Action]
-Description = wAURden: scanning package install scriptlets...
+Description = wAURden: summarizing scanned packages...
 When = PreTransaction
-Exec = /usr/bin/waurden gate
+Exec = /usr/bin/waurden summary --targets
+NeedsTargets
 `
+
+const makepkgHookPath = "/etc/makepkg.conf.d/00-waurden.conf"
+const pacmanHookPath = "/etc/pacman.d/hooks/waurden.hook"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -57,6 +66,8 @@ func main() {
 		runGateCmd(args)
 	case "show":
 		runShow(args)
+	case "summary":
+		runSummary(args)
 	case "forget":
 		runForget(args)
 	case "allow":
@@ -83,6 +94,8 @@ Usage:
                              --force (alias --no-cache) ignores the cached verdict
   waurden gate [DIR]         scan + enforce policy; exit 1 if blocked
   waurden show <pkgname>     print stored DB record for a package
+  waurden summary            table of all scanned packages (newest first)
+                             --targets reads pkgnames on stdin (pacman hook use)
   waurden allow [DIR]        acknowledge a blocked package for its current
                              PKGBUILD hash (cleared when the PKGBUILD changes)
   waurden forget <pkgname>   drop the cached verdict so the next scan re-runs
@@ -132,6 +145,19 @@ func versionString() string {
 		parts = append(parts, "dirty")
 	}
 	return base + " (" + strings.Join(parts, ", ") + ")"
+}
+
+// truncate collapses a (possibly multi-line) summary to a single, length-capped
+// line suitable for a one-line status message. Empty input yields empty output.
+func truncate(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", " "))
+	// collapse runs of whitespace introduced by the newline replacement
+	s = strings.Join(strings.Fields(s), " ")
+	const max = 80
+	if len(s) > max {
+		return s[:max-1] + "…"
+	}
+	return s
 }
 
 // short abbreviates a pkgbuild_hash for human-facing log lines.
@@ -222,10 +248,12 @@ func runScan(args []string) {
 	// infrastructure problem, not a verdict — don't render it as "Verdict: OK".
 	if v.ScanFailed {
 		if cfg.OnError == "block" {
-			fmt.Fprintf(os.Stderr, "wAURden: scan failed (on_error=block): %v\n", v.Summary)
+			fmt.Fprintf(os.Stderr, "wAURden: %s — scan failed (on_error=block): %v\n", pf.Name, v.Summary)
 			os.Exit(1)
 		}
-		// warn already printed a WARNING in analyze.go; allow is intentionally quiet.
+		// on_error=warn: one tagged line so the failure is legible (analyze.go no
+		// longer prints its own untagged WARNING). allow mode never sets ScanFailed.
+		fmt.Fprintf(os.Stderr, "wAURden: %s — could not scan (%s); build allowed (on_error=warn)\n", pf.Name, truncate(v.Summary))
 		os.Exit(0)
 	}
 
@@ -287,11 +315,13 @@ func runGateCmd(args []string) {
 	// path so the message reads like an infrastructure problem, not a security alarm.
 	if v.ScanFailed {
 		if cfg.OnError == "block" {
-			fmt.Fprintf(os.Stderr, "wAURden: build blocked — scan failed (on_error=block): %v\n", v.Summary)
+			fmt.Fprintf(os.Stderr, "wAURden: %s — build blocked, scan failed (on_error=block): %v\n", pf.Name, v.Summary)
 			os.Exit(1)
 		}
-		// on_error=warn: WARNING was already printed in analyze.go; pause so it
-		// doesn't scroll away before the user can read it.
+		// on_error=warn: emit a single per-package terminal line so this
+		// "scanning <pkg>…" gets a matching result instead of vanishing into
+		// yay's install flood as an untagged WARNING.
+		fmt.Fprintf(os.Stderr, "wAURden: %s — could not scan (%s); build allowed (on_error=warn)\n", pf.Name, truncate(v.Summary))
 		if isTTY() {
 			fmt.Fprintf(os.Stderr, "Press Enter to continue (build will proceed)...")
 			bufio.NewReader(os.Stdin).ReadString('\n')
@@ -301,8 +331,11 @@ func runGateCmd(args []string) {
 
 	// Clean OK: emit a one-line confirmation so the verdict is visible in the
 	// makepkg/yay log (the build otherwise gives no sign wAURden ran at all).
+	// The provider/model is dropped from this line (it is identical for every
+	// concurrent gate process and is stated once in the `summary` recap); the
+	// info summary is appended so the line carries something package-specific.
 	if v.Verdict == "ok" && !blocked {
-		fmt.Fprintf(os.Stderr, "wAURden: %s — OK (confidence %.2f, %s)\n", pf.Name, v.Confidence, providerLabel(cfg))
+		fmt.Fprintf(os.Stderr, "wAURden: %s — OK (%.2f) %s\n", pf.Name, v.Confidence, truncate(v.Summary))
 		os.Exit(0)
 	}
 
@@ -529,23 +562,29 @@ func runAllow(args []string) {
 	fmt.Printf("recorded ack: %s @ %s (cleared automatically when the PKGBUILD changes)\n", pf.Name, short(pf.Hash))
 }
 
+// effectiveHome returns the home directory of the user wAURden should act on
+// behalf of. Commands run under a root hook (install-hooks, the pacman
+// summary hook) execute as root, but the config and DB belong to the invoking
+// user identified by $SUDO_USER; fall back to the current user's home otherwise.
+func effectiveHome() string {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil {
+			return u.HomeDir
+		}
+	}
+	if h, err := os.UserHomeDir(); err == nil {
+		return h
+	}
+	return ""
+}
+
 // configExistsAnywhere checks for a valid config file, accounting for the fact
 // that install-hooks runs as root but the config belongs to the invoking user.
 func configExistsAnywhere() bool {
 	if _, err := os.Stat("/etc/waurden/config.toml"); err == nil {
 		return true
 	}
-	home := ""
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		if u, err := user.Lookup(sudoUser); err == nil {
-			home = u.HomeDir
-		}
-	}
-	if home == "" {
-		if h, err := os.UserHomeDir(); err == nil {
-			home = h
-		}
-	}
+	home := effectiveHome()
 	if home == "" {
 		return false
 	}
@@ -581,28 +620,37 @@ func runInstallHooks() {
 		os.Exit(1)
 	}
 
-	// Only the makepkg hook is installed — it fires before PKGBUILD is sourced.
-	// The pacman hook (hooks/pacman/waurden.hook) is a future-work placeholder.
-	path := "/etc/makepkg.conf.d/00-waurden.conf"
-	status := hookStatus(path, makepkgHook)
-	switch status {
-	case "ok":
-		fmt.Printf("Up to date: %s\n", path)
-		fmt.Println("wAURden hooks are already up to date.")
-	case "missing":
-		if err := writeFile(path, makepkgHook); err != nil {
-			fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", path, err)
-			os.Exit(1)
+	// Two hooks: the makepkg hook (00-waurden.conf) fires before PKGBUILD is
+	// sourced and does the actual gating; the pacman hook fires once per
+	// transaction and prints the end-of-run `summary` recap.
+	changed := false
+	for _, h := range []struct{ path, content string }{
+		{makepkgHookPath, makepkgHook},
+		{pacmanHookPath, pacmanHook},
+	} {
+		switch hookStatus(h.path, h.content) {
+		case "ok":
+			fmt.Printf("Up to date: %s\n", h.path)
+		case "missing":
+			if err := writeFile(h.path, h.content); err != nil {
+				fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", h.path, err)
+				os.Exit(1)
+			}
+			fmt.Printf("Installed: %s\n", h.path)
+			changed = true
+		case "outdated":
+			if err := writeFile(h.path, h.content); err != nil {
+				fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", h.path, err)
+				os.Exit(1)
+			}
+			fmt.Printf("Updated (was out of date): %s\n", h.path)
+			changed = true
 		}
-		fmt.Printf("Installed: %s\n", path)
+	}
+	if changed {
 		fmt.Println("wAURden hooks installed.")
-	case "outdated":
-		if err := writeFile(path, makepkgHook); err != nil {
-			fmt.Fprintf(os.Stderr, "wAURden: cannot write %s: %v\n", path, err)
-			os.Exit(1)
-		}
-		fmt.Printf("Updated (was out of date): %s\n", path)
-		fmt.Println("wAURden hooks updated.")
+	} else {
+		fmt.Println("wAURden hooks are already up to date.")
 	}
 }
 
@@ -612,21 +660,25 @@ func runUninstallHooks() {
 		os.Exit(1)
 	}
 
-	path := "/etc/makepkg.conf.d/00-waurden.conf"
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			fmt.Printf("Not found (skipping): %s\n", path)
+	for _, path := range []string{makepkgHookPath, pacmanHookPath} {
+		if err := os.Remove(path); err != nil {
+			if os.IsNotExist(err) {
+				fmt.Printf("Not found (skipping): %s\n", path)
+			} else {
+				fmt.Fprintf(os.Stderr, "wAURden: cannot remove %s: %v\n", path, err)
+				os.Exit(1)
+			}
 		} else {
-			fmt.Fprintf(os.Stderr, "wAURden: cannot remove %s: %v\n", path, err)
-			os.Exit(1)
+			fmt.Printf("Removed: %s\n", path)
 		}
-	} else {
-		fmt.Printf("Removed: %s\n", path)
 	}
 	fmt.Println("wAURden hooks uninstalled.")
 }
 
 func writeFile(path, content string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
