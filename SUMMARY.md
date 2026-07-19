@@ -163,9 +163,14 @@ package and yay's source/verify phase runs those processes **concurrently**; `op
 `sql.Open("sqlite", path)` (default rollback journal, zero busy timeout), so the instant one gate held
 the write lock (`recordScan` INSERT / `upsertRecord`) every other process's `lookupRecord` got
 `SQLITE_BUSY` immediately → false block (fail-closed, safe but wrong). Fix: open with DSN pragmas
-`?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)` — contenders now wait instead of erroring, and
-WAL lets readers coexist with the writer. `foreign_keys` stays OFF (unchanged). Verified with a 20-way
-concurrent upsert+recordScan+lookup test: WAL engaged, busy_timeout=5000, zero SQLITE_BUSY.
+`?_pragma=busy_timeout(<n>)&_pragma=journal_mode(WAL)` — contenders now wait (bounded) instead of
+erroring, and WAL lets readers coexist with the writer. `foreign_keys` stays OFF (unchanged). The wait
+is a **config knob**, not hard-coded: `db_busy_timeout_seconds` (`Config.DBBusyTimeout`, env
+`WAURDEN_DB_BUSY_TIMEOUT`) defaults to **7s**, threaded through `openDB` (converted to the pragma's ms);
+0 = fail fast, negative clamps to 0. busy_timeout retries internally for at most that window then returns
+SQLITE_BUSY (gate fails closed, never hangs the build). Verified: 20-way concurrent
+upsert+recordScan+lookup with zero SQLITE_BUSY; pragma reflects the configured value (7→7000, 3→3000,
+0→0, −5→0); `loadConfig` default is 7.
 
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
