@@ -269,6 +269,27 @@ func computeDiff(oldText, newText string) string {
 	return sb.String()
 }
 
+// verdictFromRecord reconstructs a Verdict from a cached packages row.
+func verdictFromRecord(r *DBRecord) Verdict {
+	var v Verdict
+	v.Verdict = r.Verdict
+	v.Confidence = r.Confidence
+	v.Summary = r.Summary
+	v.SourceAnalyzed = r.SourceAnalyzed
+	if r.Findings != "" {
+		_ = json.Unmarshal([]byte(r.Findings), &v.Findings)
+	}
+	return v
+}
+
+// cacheHit reports whether r is a reusable verdict for pf under providerStr:
+// same PKGBUILD hash (sha256 of the raw bytes) AND same engine. A name of
+// "unknown" (pkgname parse failed) is never a stable cache key.
+func cacheHit(r *DBRecord, pf PackageFiles, providerStr string) bool {
+	return r != nil && pf.Name != "unknown" &&
+		r.PKGBUILDHash == pf.Hash && r.Provider == providerStr
+}
+
 func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, error) {
 	// providerStr matches the value storeVerdict persists, so it can be compared
 	// against the cached row below. It also encodes the scan mode (heuristics-only
@@ -311,17 +332,8 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	// one rather than re-served. force skips the read entirely (scan --force). Reached
 	// only when the heuristic pre-filter above found nothing, so a fixed/added heuristic
 	// rule is never shadowed by a cached verdict.
-	if !force && pf.Name != "unknown" && existing != nil &&
-		existing.PKGBUILDHash == pf.Hash && existing.Provider == providerStr {
-		var v Verdict
-		v.Verdict = existing.Verdict
-		v.Confidence = existing.Confidence
-		v.Summary = existing.Summary
-		v.SourceAnalyzed = existing.SourceAnalyzed
-		if existing.Findings != "" {
-			_ = json.Unmarshal([]byte(existing.Findings), &v.Findings)
-		}
-		return v, nil
+	if !force && cacheHit(existing, pf, providerStr) {
+		return verdictFromRecord(existing), nil
 	}
 
 	// heuristics-only mode never consults the LLM: a clean pre-filter is the
@@ -339,6 +351,24 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 			fmt.Fprintf(os.Stderr, "wAURden: db store error: %v\n", err)
 		}
 		return v, nil
+	}
+
+	// Recently-scanned guard (concurrency de-dup). Under yay these gate processes
+	// run concurrently, and a make-dependency can be gated by two makepkg invocations
+	// at once (an early build batch and the main transaction). The cache read at the
+	// top of analyze() happens before the slow network call, so a sibling process that
+	// started slightly earlier may not have committed its verdict yet when we first
+	// looked — both then miss the cache and issue duplicate LLM scans. Re-read the row
+	// now, immediately before the call: if a sibling has since written a verdict for the
+	// identical PKGBUILD hash AND engine, reuse it. Any row that satisfies cacheHit here
+	// was necessarily written after our first read (which missed by definition), i.e. by
+	// a concurrent sibling in this same run, so the hash+provider match is the whole
+	// correctness guarantee — no time window is needed. Skipped under force (an explicit
+	// re-scan request) and when name is "unknown" (no stable key), same as the top cache.
+	if !force && pf.Name != "unknown" {
+		if fresh, err := lookupRecord(db, pf.Name); err == nil && cacheHit(fresh, pf, providerStr) {
+			return verdictFromRecord(fresh), nil
+		}
 	}
 
 	diff := ""

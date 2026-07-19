@@ -172,5 +172,20 @@ SQLITE_BUSY (gate fails closed, never hangs the build). Verified: 20-way concurr
 upsert+recordScan+lookup with zero SQLITE_BUSY; pragma reflects the configured value (7→7000, 3→3000,
 0→0, −5→0); `loadConfig` default is 7.
 
+Latest fix (DONE) — **duplicate LLM scan of a package within one `yay` run (concurrency de-dup).** A
+real hypr* rebuild scanned hyprwayland-scanner-git twice (two completed `— OK` lines, two `==> Making
+package` invocations). Cause: the makepkg.conf.d hook fires on **every** `makepkg` run and yay invokes
+makepkg more than once for make-dependencies (an early build batch + the main transaction); the verdict
+cache normally absorbs the second gate, but `analyze()` reads the cache at the top and only writes after
+the slow LLM call, so two concurrent gates for the same package both miss the cache and each issue a full
+scan. Fix: a **recently-scanned guard** — refactored the cache-hit logic into `cacheHit(r, pf, providerStr)`
+(hash `pf.Hash` == `PKGBUILDHash` AND engine match) + `verdictFromRecord`, then re-read the row with a
+fresh `lookupRecord` immediately before `callProvider`; if a sibling has since committed a verdict for the
+identical PKGBUILD sha256 and engine, reuse it instead of re-scanning. No time window needed: any row that
+satisfies `cacheHit` at the re-read was written after our first (missed) read, i.e. by a concurrent sibling
+this run. Skipped under `force` and `name=="unknown"`, same as the top cache. Residual window: a sibling
+still mid-LLM-call (not yet committed) is not caught — acceptable (an extra scan, not a security gap).
+Build/vet/test clean.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
