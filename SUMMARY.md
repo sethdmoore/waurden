@@ -156,5 +156,16 @@ history; `waurden summary --history` prints the full newest-first timeline with 
 re-gating a malicious package keeps both block events in `--history` while `packages` shows one row.
 Rationale: packages = current-state dimension, scans = event fact table — use the DB as a DB.
 
+Latest fix (DONE) — **SQLite concurrency: "database is locked" during batched builds.** A real
+`yay -Syu` rebuild of the hypr* stack falsely blocked 7 of 13 packages with `gate error: db lookup:
+database is locked (5) (SQLITE_BUSY)`. Root cause: the makepkg.conf.d hook runs `waurden gate` once per
+package and yay's source/verify phase runs those processes **concurrently**; `openDB` used a bare
+`sql.Open("sqlite", path)` (default rollback journal, zero busy timeout), so the instant one gate held
+the write lock (`recordScan` INSERT / `upsertRecord`) every other process's `lookupRecord` got
+`SQLITE_BUSY` immediately → false block (fail-closed, safe but wrong). Fix: open with DSN pragmas
+`?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)` — contenders now wait instead of erroring, and
+WAL lets readers coexist with the writer. `foreign_keys` stays OFF (unchanged). Verified with a 20-way
+concurrent upsert+recordScan+lookup test: WAL engaged, busy_timeout=5000, zero SQLITE_BUSY.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
