@@ -1,3 +1,20 @@
+Latest session — **obfuscated-payload hardening** (real bypass reported by the user: an inline
+`python3 - <<EOF` heredoc whose "IP allowlist" was an array of decimal ASCII codes decoded with
+`chr(int(x))` and run via `os.system("".join(...))`, disguised by comments; qwen only rated it
+SUSPICIOUS so it wasn't blocked). Root cause: the heuristics had **no** patterns for runtime string
+construction/decoding, so the class reached (and fooled) the LLM. Fix (`heuristics.go`): added
+**critical** patterns for `os.system`/`os.popen`/`subprocess`/`eval`/`exec` executing a decoded or
+assembled string (`.join`/`chr(`/`unhexlify`/`fromhex`/`b64decode`/`codecs.`/`.decode(`), plus **high**
+patterns for `chr(int(...))` and join/comprehension-over-`chr()` — any one hard-blocks before the LLM
+(the sample now fires 1 critical + 2 high). Added **medium** advisories (feed the LLM, don't block) for
+interpreter heredocs (`python3 - <<`) and bare `os.system`/`subprocess`. Also closed a second channel
+the user spotted: the git/line **diff is sent to the LLM verbatim**, carrying comments that
+`PKGBUILDSrc` strips — so disguising narration (`# critical for waurden to function`) still biased the
+model. `analyze.go` now runs `stripDiffComments` on the diff before `buildUserContent`. New inert
+sample `tests/samples/chr-obfuscation/` + `TestObfuscatedExecutionBlocks` / `TestBenignPythonNotBlocked`
+(FP guard: literal `os.system("make install")` and `os.system("gcc " + flags)` stay advisory) /
+`TestStripDiffComments`. All tests pass.
+
 wAURden is a complete Go binary (v0.1.0) that intercepts `makepkg` before the PKGBUILD is
 sourced, runs local heuristics + an LLM, and blocks the build on a malicious verdict. Source
 files: `main.go`, `config.go`, `collect.go`, `analyze.go`, `provider.go` (`anthropic`/`openai`+base_url/`static`),

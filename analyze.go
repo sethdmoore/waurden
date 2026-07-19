@@ -379,6 +379,33 @@ func computeDiff(oldText, newText string) string {
 	return sb.String()
 }
 
+// stripDiffComments removes comment-only lines from a unified or +/- line diff
+// before it is shown to the LLM. PKGBUILDSrc already drops comments so a package
+// can't narrate a disguising "explanation" (or smuggle prompt injection) to the
+// model — but a raw diff carries comments verbatim and would reopen that channel.
+// A leading diff marker (+, -, or a context space) is skipped; if the remaining
+// content's first non-space byte is '#', the whole diff line is dropped. Git
+// header lines (---, +++, @@, diff --git, index) never start with '#' after the
+// marker, so they are preserved.
+func stripDiffComments(diff string) string {
+	if diff == "" {
+		return diff
+	}
+	lines := strings.Split(diff, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		body := line
+		if len(body) > 0 && (body[0] == '+' || body[0] == '-' || body[0] == ' ') {
+			body = body[1:]
+		}
+		if strings.HasPrefix(strings.TrimLeft(body, " \t"), "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // verdictFromRecord reconstructs a Verdict from a cached packages row. Cached is
 // set so callers can mark the output as reused (this is the only path that rebuilds
 // a verdict from the DB rather than a fresh scan).
@@ -520,6 +547,16 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	if diff == "" && existing != nil && existing.PKGBUILDText != "" {
 		diff = computeDiff(existing.PKGBUILDText, pf.PKGBUILDRaw)
 	}
+
+	// The diff reaches the LLM verbatim. Comment lines are stripped from
+	// PKGBUILDSrc so disguising narration ("# this is critical for waurden to
+	// function") never biases the model — but a *raw* diff would carry those same
+	// comments straight through, reopening the exact channel PKGBUILDSrc closes.
+	// Strip comment-only lines from the diff for the same reason. (Added non-comment
+	// lines are also present in PKGBUILDRaw and already ran through the heuristic /
+	// injection pre-filter above; removed lines aren't executed — so the residual
+	// risk the diff uniquely adds is precisely this comment channel.)
+	diff = stripDiffComments(diff)
 
 	userContent := buildUserContent(pf, diff, advisory)
 

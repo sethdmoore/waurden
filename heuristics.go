@@ -69,6 +69,18 @@ var builtinPatterns = []HeuristicPattern{
 	{Regex: `(?i)\b(source|\.)\b\s+<\(\s*(curl|wget|fetch)\b`, Severity: "critical", Detail: "sourcing a process substitution that downloads code — remote code execution"},
 	{Regex: `(?i)\b(base64\s+(-d|--decode|-D)|xxd\s+-r|openssl\s+enc[^\n]*-d|gunzip|zcat|xz\s+-d|unxz|gzip\s+-d|\brev\b|\btr\s)[^\n]*\|[^\n]*\b(sh|bash|zsh|dash|python[23]?|perl|ruby|node)\b`, Severity: "critical", Detail: "content decoded/unpacked then piped to an interpreter — obfuscated code execution (xz-backdoor style)"},
 
+	// ── Runtime-constructed / decoded payload execution ───────────────────
+	// A string assembled from character codes or decoded from base64/hex at
+	// runtime and then executed hides the real command from both static review
+	// and an LLM auditor (the payload is data, not readable code, until it runs).
+	// These primitives have essentially no legitimate use in a PKGBUILD, so they
+	// hard-block before the model is ever consulted.
+	{Regex: `(?i)\bos\.(system|popen)\s*\([^)\n]*(\.join\b|\bchr\s*\(|\bunhexlify\b|\bfromhex\b|\bb64decode\b|codecs\.|\.decode\s*\()`, Severity: "critical", Detail: "os.system/os.popen executing a decoded or runtime-assembled string — obfuscated command execution hiding the real command from review"},
+	{Regex: `(?i)\b(subprocess\.(run|call|Popen|check_output|check_call)|commands\.getoutput)\s*\([^)\n]*(\.join\b|\bchr\s*\(|\bunhexlify\b|\bfromhex\b|\bb64decode\b|codecs\.|\.decode\s*\()`, Severity: "critical", Detail: "subprocess executing a decoded or runtime-assembled string — obfuscated command execution"},
+	{Regex: `(?i)\b(eval|exec)\s*\(\s*("" *\.join|'' *\.join|bytes\.fromhex|codecs\.decode|base64\.|[a-z_]+\.decode\s*\()`, Severity: "critical", Detail: "eval/exec of a decoded or assembled string — dynamic execution of an obfuscated payload"},
+	{Regex: `(?i)\bchr\s*\(\s*int\s*\(`, Severity: "high", Detail: "character-code decoding via chr(int(...)) — reconstructs a hidden string from an integer array, a hallmark of payload obfuscation"},
+	{Regex: `(?i)(\.join\s*\(\s*[\[(]?|\[)\s*(uni)?chr\s*\(`, Severity: "high", Detail: "string assembled from character codes (join/comprehension over chr()) — payload built at runtime to evade static matchers"},
+
 	// ── Reverse shells / raw network sockets ──────────────────────────────
 	{Regex: `(?i)/dev/(tcp|udp)/`, Severity: "critical", Detail: "bash /dev/tcp or /dev/udp pseudo-device — raw network socket, typical reverse shell"},
 	{Regex: `(?i)\b(bash|sh|zsh)\b\s+-i\b[^\n]*(>&|<&|2>&1|/dev/(tcp|udp))`, Severity: "critical", Detail: "interactive shell with redirected I/O — reverse shell"},
@@ -107,6 +119,8 @@ var builtinPatterns = []HeuristicPattern{
 	{Regex: `\$\{IFS\}`, Severity: "medium", Detail: "${IFS} used to obscure whitespace — common heuristic/AV evasion technique"},
 	{Regex: `(?i)\bLD_PRELOAD=`, Severity: "medium", Detail: "LD_PRELOAD set — library injection; verify it targets the build, not the live system"},
 	{Regex: `(?i)\b(python[23]?|perl|ruby|node|php)\s+-(c|e)\b`, Severity: "medium", Detail: "inline interpreter one-liner — common obfuscated-execution vector; verify the code"},
+	{Regex: `(?i)\b(python[23]?|perl|ruby|node|php)\b\s+-\s*(<<|<)`, Severity: "medium", Detail: "interpreter reading its program from a heredoc/stdin — inline embedded script that isn't visible as a normal source file; verify it is not obfuscated"},
+	{Regex: `(?i)\bos\.(system|popen)\s*\(|\bsubprocess\.(run|call|Popen|check_output|check_call)\b`, Severity: "medium", Detail: "inline interpreter shelling out to the system (os.system/subprocess) — verify the executed command is a static literal, not a constructed/decoded string"},
 	{Regex: `(?i)\bgit\b[^\n]*\bcore\.hooksPath\b|\.git/hooks/`, Severity: "medium", Detail: "git-hooks manipulation — code execution via git operations (supply-chain vector)"},
 
 	// ── Package installs during build (Atomic-Arch typosquat class) ───────
