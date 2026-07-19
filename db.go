@@ -87,7 +87,15 @@ func openDB(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
-	db, err := sql.Open("sqlite", path)
+	// Under `yay`, the makepkg.conf.d hook runs `waurden gate` once per package
+	// concurrently, so multiple processes open this DB at once. Default SQLite
+	// (rollback journal, zero busy timeout) returns SQLITE_BUSY the instant one
+	// process holds the write lock, which surfaced as "database is locked" gate
+	// failures during a batched build. busy_timeout makes contenders wait instead
+	// of erroring; WAL lets readers and the writer coexist. (foreign_keys stays
+	// OFF deliberately — see the scans-table note above.)
+	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
