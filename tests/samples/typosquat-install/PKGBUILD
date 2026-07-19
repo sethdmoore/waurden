@@ -1,0 +1,18 @@
+# wAURden test sample — MALICIOUS (inert). The PKGBUILD looks clean; the payload
+# and the prompt-injection live in the .install scriptlet (a helper file, which
+# makepkg/pacman run and wAURden also scans). Tests helper-file coverage.
+pkgname=innocent-looking
+pkgver=1.0
+pkgrel=1
+pkgdesc="Innocent looking"
+arch=('any')
+url="https://example.com"
+license=('MIT')
+install=innocent-looking.install
+source=("https://example.com/innocent-looking-1.0.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" install
+}

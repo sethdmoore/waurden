@@ -209,5 +209,27 @@ Ordering caveat (front-loaded render maximal when the helper gates the root earl
 phase; per-package security guarantee unchanged) documented honestly. Shipping order + edge cases in the
 spec.
 
+Latest changeset (DONE) — **heuristics overhaul: tiering, big pattern expansion, prompt-injection/Trojan-Source
+defense.** The built-in set was thin and any match hard-blocked at 0.95, so it couldn't grow without false
+blocks. Fix: `splitVerdict` **tiers by severity** — critical/high → hard block (skip LLM, 0.95/0.90);
+medium/low → *advisory* (never blocks; fed to the LLM in a trusted `<heuristic_notes>` block via
+`buildUserContent`, folded into stored findings by `mergeFindings`, and shown as `suspicious` offline). This
+lets the set be broad: added reverse shells (`/dev/tcp`, `nc -e`, `socat`), decode-then-pipe obfuscation
+(base64/xz/tr | sh — xz-backdoor style), broadened exfil (browser/wallet/cookie stores, `env|curl`, HTTP POST
+of `$vars`), rootkit/privesc primitives (`sudoers`, `ld.so.preload`, `authorized_keys`, eBPF/`insmod`,
+setuid, `chattr +i`), destructive (`rm -rf /`, `dd`, `mkfs`), and package-manager installs (Atomic-Arch
+typosquat class) — the legit-in-scriptlet ones (useradd/systemctl/npm/setuid) sit at medium so a normal daemon
+package doesn't hard-block. New **prompt-injection layer** (`scanInjection`/`injectionPatterns`/
+`suspiciousUnicode`, all critical, scanned over the RAW PKGBUILD **and** helper/`.install` files): "ignore
+previous instructions" family, role reassignment, injected verdict JSON, our own wrapper delimiters, chat/model
+control tokens (`<|im_start|>`, `<<SYS>>`, `[INST]`), and invisible/bidi Unicode (Trojan Source, CVE-2021-42574)
+— this blocks a manipulative package *before* the LLM (which is what injection subverts) ever runs. `heuristicCheck`
+now takes `PackageFiles` and scans PKGBUILD + all helpers. **Bug found & fixed via end-to-end test:** the
+`static`/mock provider re-scanned the fully-assembled prompt, so it false-fired the injection detector on
+wAURden's own `<pkgbuild>` wrapper (every package → MALICIOUS); `mockPayload` now extracts just the wrapped
+package sections. Added inert, labeled sample PKGBUILDs (one per attack class) under `tests/samples/` and
+`heuristics_test.go` asserting the full tiering matrix. Verified end-to-end with the static provider: benign→OK,
+benign-daemon→SUSPICIOUS (gate exit 0), all 10 attack classes→MALICIOUS (gate exit 1); build/vet/test clean.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.

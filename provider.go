@@ -287,8 +287,27 @@ func callOpenAI(cfg Config, systemPrompt, userContent string) (string, error) {
 }
 
 func callMock(cfg Config, userContent string) (string, error) {
-	v := heuristicCheck(userContent)
-	if v == nil {
+	// The mock provider stands in for the LLM. It must scan the *package* payload,
+	// not the fully-assembled prompt: the prompt carries wAURden's own <pkgbuild>
+	// wrapper tags and <heuristic_notes> block, and re-scanning those would false-
+	// match the injection detector (our own delimiters) and the malware patterns
+	// (the note text quotes flagged lines). Injection detection is the pre-filter's
+	// job (heuristicCheck runs on raw content before we ever get here); the mock,
+	// like a real LLM, only judges the code itself for malware patterns.
+	block, advisory := splitVerdict(scanPatterns(mockPayload(userContent), "PKGBUILD"))
+	var v *Verdict
+	switch {
+	case block != nil:
+		v = block
+	case len(advisory) > 0:
+		v = &Verdict{
+			Verdict:        "suspicious",
+			Confidence:     0.6,
+			Summary:        "Mock heuristics flagged patterns worth review; no hard-block pattern matched.",
+			Findings:       advisory,
+			SourceAnalyzed: "pkgbuild-only",
+		}
+	default:
 		v = &Verdict{
 			Verdict:        "ok",
 			Confidence:     0.85,
@@ -302,4 +321,26 @@ func callMock(cfg Config, userContent string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// mockPayload extracts the untrusted package sections (<pkgbuild>, <diff>,
+// <helper_files>) from the assembled prompt, dropping wAURden's own framing and
+// the trusted <heuristic_notes> block, so the mock provider scans package code
+// rather than the scanner's wrapper. Falls back to the whole string if no wrapper
+// tags are present (e.g. a caller that passed raw content).
+func mockPayload(userContent string) string {
+	var b strings.Builder
+	for _, tag := range []string{"pkgbuild", "diff", "helper_files"} {
+		open, closing := "<"+tag+">", "</"+tag+">"
+		s := strings.Index(userContent, open)
+		e := strings.Index(userContent, closing)
+		if s >= 0 && e > s {
+			b.WriteString(userContent[s+len(open) : e])
+			b.WriteByte('\n')
+		}
+	}
+	if b.Len() == 0 {
+		return userContent
+	}
+	return b.String()
 }
