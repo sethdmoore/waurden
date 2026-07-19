@@ -36,6 +36,11 @@ type DBRecord struct {
 	// Written only by storeAcknowledgement, never by upsertRecord, so a routine
 	// re-scan leaves it untouched.
 	AcknowledgedHash string
+	// LastScannedCommit is the git HEAD the package was last scanned at (when its
+	// dir is a git checkout). The next scan diffs this commit against the new HEAD
+	// so the LLM can focus on what actually changed. Advanced only on a successful
+	// scan, never on a ScanFailed/on_error result.
+	LastScannedCommit string
 }
 
 const schema = `
@@ -56,7 +61,8 @@ CREATE TABLE IF NOT EXISTS packages (
     maintainer        TEXT,
     prev_maintainer   TEXT,
     known_committers  TEXT,
-    acknowledged_hash TEXT
+    acknowledged_hash TEXT,
+    last_scanned_commit TEXT
 );`
 
 // scans is the append-only history that packages (a PRIMARY KEY(name) cache,
@@ -152,6 +158,7 @@ func migrateColumns(db *sql.DB) error {
 		`ALTER TABLE packages ADD COLUMN prev_maintainer TEXT`,
 		`ALTER TABLE packages ADD COLUMN known_committers TEXT`,
 		`ALTER TABLE packages ADD COLUMN acknowledged_hash TEXT`,
+		`ALTER TABLE packages ADD COLUMN last_scanned_commit TEXT`,
 	}
 	for _, stmt := range alters {
 		if _, err := db.Exec(stmt); err != nil {
@@ -170,14 +177,14 @@ func lookupRecord(db *sql.DB, name string) (*DBRecord, error) {
 		COALESCE(verdict,''), COALESCE(confidence,0), COALESCE(summary,''),
 		COALESCE(findings,''), COALESCE(source_analyzed,''), COALESCE(provider,''),
 		COALESCE(maintainer,''), COALESCE(known_committers,''),
-		COALESCE(acknowledged_hash,'')
+		COALESCE(acknowledged_hash,''), COALESCE(last_scanned_commit,'')
 		FROM packages WHERE name = ?`, name)
 
 	var r DBRecord
 	err := row.Scan(&r.Name, &r.LastScanned, &r.PKGBUILDHash, &r.PKGBUILDText,
 		&r.HelperFiles, &r.SourceHashes, &r.Diff, &r.Verdict, &r.Confidence,
 		&r.Summary, &r.Findings, &r.SourceAnalyzed, &r.Provider,
-		&r.Maintainer, &r.KnownCommitters, &r.AcknowledgedHash)
+		&r.Maintainer, &r.KnownCommitters, &r.AcknowledgedHash, &r.LastScannedCommit)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -283,8 +290,9 @@ func recentScans(db *sql.DB, onlyBlocked bool, limit int) ([]ScanEvent, error) {
 func upsertRecord(db *sql.DB, r DBRecord) error {
 	_, err := db.Exec(`INSERT INTO packages (name, last_scanned, pkgbuild_hash,
 		pkgbuild_text, helper_files, source_hashes, diff, verdict, confidence,
-		summary, findings, source_analyzed, provider, known_committers)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		summary, findings, source_analyzed, provider, known_committers,
+		last_scanned_commit)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(name) DO UPDATE SET
 		last_scanned=excluded.last_scanned,
 		pkgbuild_hash=excluded.pkgbuild_hash,
@@ -298,9 +306,11 @@ func upsertRecord(db *sql.DB, r DBRecord) error {
 		findings=excluded.findings,
 		source_analyzed=excluded.source_analyzed,
 		provider=excluded.provider,
-		known_committers=excluded.known_committers`,
+		known_committers=excluded.known_committers,
+		last_scanned_commit=excluded.last_scanned_commit`,
 		r.Name, r.LastScanned, r.PKGBUILDHash, r.PKGBUILDText,
 		r.HelperFiles, r.SourceHashes, r.Diff, r.Verdict, r.Confidence,
-		r.Summary, r.Findings, r.SourceAnalyzed, r.Provider, r.KnownCommitters)
+		r.Summary, r.Findings, r.SourceAnalyzed, r.Provider, r.KnownCommitters,
+		r.LastScannedCommit)
 	return err
 }

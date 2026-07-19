@@ -50,6 +50,22 @@ timeout_seconds = 60
 # wait (the gate then fails closed rather than hanging the build). 0 = fail fast.
 # db_busy_timeout_seconds = 7
 
+# Front-loaded dependency-tree scan. When a package is gated, wAURden discovers
+# its whole recursive AUR dependency closure (via .SRCINFO depends + pacman
+# classification), scans every AUR package before the helper compiles anything,
+# renders a live tree of results, and aborts on the first bad verdict. Set false
+# to fall back to the legacy single-package (current $PWD only) gate.
+# tree_scan = true
+
+# On a clean tree, hold the rendered results on screen this many seconds before
+# returning, so they're readable before the helper's build output scrolls them
+# away (TTY only). 0 = no pause.
+# tree_pause_seconds = 1
+
+# Where wAURden keeps its own inert AUR clones (never built — used only to
+# discover, pre-scan, and diff dependency PKGBUILDs). Default ~/.cache/waurden/aur.
+# clone_dir = "~/.cache/waurden/aur"
+
 # Verdicts that abort the build (used by 'waurden gate' / the makepkg hook).
 # Possible verdict values: ok, suspicious, malicious
 block_on = ["malicious"]

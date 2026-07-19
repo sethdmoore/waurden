@@ -28,6 +28,37 @@ exfiltration, eval of encoded payloads, suspicious package installs). These catc
 exact patterns from the [June 2026 "Atomic Arch" campaign](https://archlinux.org/news/active-aur-malicious-packages-incident/)
 deterministically, with no prompt-injection risk.
 
+## Front-loaded dependency-tree scan
+
+When you build a package, wAURden doesn't just check that one PKGBUILD — it discovers the
+**entire recursive set of AUR packages** that will be built and scans them all *before* the
+helper starts compiling. It reads `depends`/`makedepends`/`checkdepends` from `.SRCINFO`,
+uses your local pacman database to prune official-repo packages, and manages its own inert
+clones of the AUR dependencies under `~/.cache/waurden/aur/` to read and diff their PKGBUILDs.
+The result is rendered as a live tree, and a bad verdict anywhere aborts the whole build:
+
+```
+wAURden: scanning package tree for foo
+  Found 3 dependent AUR package(s)
+  - foo: aur: OK (0.98) — package appears clean
+   |- libfoo-git: aur: OK (1.00) — no network calls in build()
+   |- glibc: repo
+   |- baz: aur: SUSPICIOUS (0.62) — curl|sh in prepare()
+```
+
+Exit codes: `0` clean, `1` a suspicious block, `2` a malicious block. The scan that gates a
+package actually being built always reads the on-disk PKGBUILD `makepkg` is about to source —
+never a clone — so wAURden's self-clones only *discover and pre-scan* dependencies; each is
+still authoritatively re-scanned (cache-backed, nearly free) when its own build gate fires.
+Disable with `tree_scan = false` for the legacy single-package gate. The up-front whole-tree
+view is maximal on helpers with a batched verify phase (yay, paru); on any helper the per-
+package gate remains a complete wall regardless.
+
+Because wAURden owns those clones, it also computes a real **`git diff`** of each dependency's
+PKGBUILD between the last scanned commit and the current one, and feeds the change to the
+analysis — this is exactly where an "Atomic Arch"-style poisoned *update* shows up (many
+innocent commits, then one adding a malicious `npm install`).
+
 ## Install
 
 ```sh
@@ -101,7 +132,7 @@ detail   = "dd writing to block device — possible disk wipe"
 ```sh
 waurden configure         # Interactive setup wizard (run this first)
 waurden scan [DIR]        # Scan a package dir, print report, store in DB
-waurden gate [DIR]        # Scan + enforce; exits non-zero to abort makepkg
+waurden gate [DIR]        # Scan the package + its AUR dep tree; exit 1/2 to abort makepkg
 waurden show <pkgname>    # Show stored verdict for a package
 waurden summary           # Table of all scanned packages with verdicts
 waurden tokens            # LLM token usage: this run / today / week / month / all time

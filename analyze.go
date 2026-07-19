@@ -422,6 +422,13 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 		}
 	}
 
+	// Anchor for PKGBUILD diffs: the current git HEAD of the package dir (the live
+	// makepkg build dir and wAURden's own clones are both git repos). "" when the
+	// dir is not a checkout — the diff path then falls back to a whole-file line
+	// diff. Recorded on the verdict only on a successful scan, so a failed/blocked
+	// infra result never advances the baseline and hides the next real change.
+	headCommit, _ := gitHeadCommit(pf.Dir)
+
 	// Heuristic pre-filter — runs BEFORE the verdict cache so the *current* binary's
 	// rules always get a vote, regardless of what an earlier scan cached. This is
 	// deliberate: the heuristics ship with the binary and are free to recompute, so a
@@ -434,7 +441,7 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	if mode != scanModeLLM {
 		block, adv := heuristicCheck(pf)
 		if block != nil {
-			if err := storeVerdict(cfg, db, pf, *block, ""); err != nil {
+			if err := storeVerdict(cfg, db, pf, *block, "", headCommit); err != nil {
 				fmt.Fprintf(os.Stderr, "wAURden: db store error: %v\n", err)
 			}
 			return *block, nil
@@ -474,7 +481,7 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 			v.Findings = advisory
 			v.Summary = fmt.Sprintf("Heuristic pre-filter flagged %d line(s) worth review; the LLM was not consulted (heuristics-only mode), so this is not a verdict of malice — inspect the findings.", len(advisory))
 		}
-		if err := storeVerdict(cfg, db, pf, v, ""); err != nil {
+		if err := storeVerdict(cfg, db, pf, v, "", headCommit); err != nil {
 			fmt.Fprintf(os.Stderr, "wAURden: db store error: %v\n", err)
 		}
 		return v, nil
@@ -498,8 +505,19 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 		}
 	}
 
+	// Prefer a real git diff of the build-relevant files between the last scanned
+	// commit and the current HEAD — that is where an "Atomic Arch"-style poisoned
+	// update shows up (N innocent commits, then one adding a malicious install).
+	// Fall back to the whole-file line diff when there is no usable git range
+	// (not a checkout, first scan, or the old commit is outside a shallow clone).
 	diff := ""
-	if existing != nil && existing.PKGBUILDText != "" {
+	if headCommit != "" && existing != nil && existing.LastScannedCommit != "" &&
+		existing.LastScannedCommit != headCommit {
+		if d, err := gitDiffFiles(pf.Dir, existing.LastScannedCommit); err == nil && strings.TrimSpace(d) != "" {
+			diff = d
+		}
+	}
+	if diff == "" && existing != nil && existing.PKGBUILDText != "" {
 		diff = computeDiff(existing.PKGBUILDText, pf.PKGBUILDRaw)
 	}
 
@@ -512,7 +530,10 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	// The provider/model is deliberately omitted: under yay these gate processes
 	// run concurrently and the model is identical for every package, so repeating
 	// it per line is noise. It is stated once in the end-of-run `summary` recap.
-	fmt.Fprintf(os.Stderr, "wAURden: scanning %s…\n", pf.Name)
+	// Suppressed under a tree gate, which renders per-node status itself.
+	if !treeScanActive {
+		fmt.Fprintf(os.Stderr, "wAURden: scanning %s…\n", pf.Name)
+	}
 
 	raw, usage, err := callProvider(cfg, systemPrompt, userContent)
 	// Count the tokens this call consumed, before parsing — a call that succeeds
@@ -546,32 +567,38 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	// the stored record keeps the full audit trail regardless of the LLM's verdict.
 	v.Findings = mergeFindings(v.Findings, advisory)
 
-	if err := storeVerdict(cfg, db, pf, v, diff); err != nil {
+	if err := storeVerdict(cfg, db, pf, v, diff, headCommit); err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: db store error: %v\n", err)
 	}
 	return v, nil
 }
 
-func storeVerdict(cfg Config, db *sql.DB, pf PackageFiles, v Verdict, diff string) error {
+// storeVerdict upserts the current-state cache row. commit is the git HEAD the
+// scan ran against (advances last_scanned_commit so the next scan can diff from
+// it); pass "" for a non-git dir. Only called on a real verdict — never on a
+// ScanFailed/on_error result — so the diff baseline never advances past an
+// unscanned change.
+func storeVerdict(cfg Config, db *sql.DB, pf PackageFiles, v Verdict, diff, commit string) error {
 	findingsJSON, _ := json.Marshal(v.Findings)
 	helperJSON, _ := json.Marshal(pf.HelperFiles)
 
 	providerStr := engineString(cfg)
 
 	return upsertRecord(db, DBRecord{
-		Name:            pf.Name,
-		LastScanned:     time.Now().UTC().Format(time.RFC3339),
-		PKGBUILDHash:    pf.Hash,
-		PKGBUILDText:    pf.PKGBUILDRaw,
-		HelperFiles:     string(helperJSON),
-		SourceHashes:    "{}",
-		Diff:            diff,
-		Verdict:         v.Verdict,
-		Confidence:      v.Confidence,
-		Summary:         v.Summary,
-		Findings:        string(findingsJSON),
-		SourceAnalyzed:  v.SourceAnalyzed,
-		Provider:        providerStr,
-		KnownCommitters: pf.KnownCommitters,
+		Name:              pf.Name,
+		LastScanned:       time.Now().UTC().Format(time.RFC3339),
+		PKGBUILDHash:      pf.Hash,
+		PKGBUILDText:      pf.PKGBUILDRaw,
+		HelperFiles:       string(helperJSON),
+		SourceHashes:      "{}",
+		Diff:              diff,
+		Verdict:           v.Verdict,
+		Confidence:        v.Confidence,
+		Summary:           v.Summary,
+		Findings:          string(findingsJSON),
+		SourceAnalyzed:    v.SourceAnalyzed,
+		Provider:          providerStr,
+		KnownCommitters:   pf.KnownCommitters,
+		LastScannedCommit: commit,
 	})
 }

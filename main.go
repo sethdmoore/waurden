@@ -325,6 +325,18 @@ func runGateCmd(args []string) {
 	printAURWarnings(pf.Name, aurInfo)
 	trackNewCommitters(&pf, existing)
 
+	// Front-loaded dependency-tree scan: discover the recursive AUR closure of this
+	// package and scan it all before the helper compiles anything, aborting on the
+	// first bad verdict. Falls through to the single-package fast path when the tree
+	// resolves to just this package (no AUR deps) or resolution isn't possible — so
+	// the common single-leaf gate is never made slower or noisier. runTreeGate exits.
+	if cfg.TreeScan {
+		if root := resolveTree(cfg, pf); hasScannableChildren(root) {
+			runTreeGate(cfg, db, pf, root, existing)
+			return // unreachable: runTreeGate always exits the process
+		}
+	}
+
 	v, blocked, err := runGate(cfg, db, pf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: gate error: %v\n", err)

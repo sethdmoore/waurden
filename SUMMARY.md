@@ -194,20 +194,42 @@ through. A new `cachedTag(v)` helper returns `" (cached)"` when set, appended to
 (`… — OK (1.00) <summary> (cached)`) and the `scan` report's `Verdict:` line. Display only; nothing
 persisted. Verified with the static provider: first gate scans, second gate + `scan` show `(cached)`.
 
-Next up (SPEC WRITTEN, NOT YET IMPLEMENTED) — **front-loaded dependency-tree scan + self-managed clones
-+ diffs.** Full spec in CLAUDE.md §10 ("Front-loaded dependency-tree scan…"). Corrects the earlier
-"grouped pre-scan is impossible" claim: a single gate *can* discover the whole tree itself via
-`.SRCINFO` depends + `pacman -Si` classification — no AUR-helper coupling. Locked decisions: never parse
-any helper's state, never wrap the helper (trigger stays the `makepkg.conf.d` gate, made tree-aware);
-wAURden owns its own AUR clones under `~/.cache/waurden/aur/<pkgbase>` (`clone.go`) and computes PKGBUILD
-diffs (`last_scanned_commit` column → `git diff last..HEAD` fed to the LLM). Security-critical principle:
-the package actually being built is always scanned from its **on-disk `$PWD`**, never a fresh clone;
-self-clones only discover/pre-scan/diff the *children*, each still re-scanned at its own gate. New files
-`deptree.go`/`clone.go`/`treeview.go`; live tree render (TTY animated, non-TTY plain lines); exit `2`
-malicious / `1` suspicious / `0` clean; config knobs `tree_scan`/`tree_pause_seconds`/`clone_dir`.
-Ordering caveat (front-loaded render maximal when the helper gates the root early, e.g. yay's verify
-phase; per-package security guarantee unchanged) documented honestly. Shipping order + edge cases in the
-spec.
+Latest changeset (DONE) — **front-loaded dependency-tree scan + self-managed clones + diffs** (CLAUDE.md
+§10 full spec). A gate now discovers the recursive AUR closure of `$PWD` itself and scans it all before the
+helper compiles anything. New `deptree.go`: `resolveTree` seeds from the on-disk `.SRCINFO`
+depends/makedepends/checkdepends (`parseDeps`, with a PKGBUILD-array fallback), classifies each via
+`pacman -Si` (official → pruned "repo" leaf) then a **batched** AUR RPC (`aurPackageBases` in `aur.go`,
+name→pkgbase; absent → "skipped" leaf), and recurses into AUR deps guarded by a pkgbase visited-set + node
+cap. The resolver's side effects (pacman/AUR/clone/deps) sit behind an injectable `treeResolver` so it is
+unit-testable with no network. `clone.go` `ensureClone` manages inert shallow clones under
+`~/.cache/waurden/aur/<pkgbase>` (git clone, else fetch + reset --hard FETCH_HEAD; advisory/non-fatal, never
+built). `treeview.go` renders the tree live: TTY animates in place with ANSI cursor moves (per-node status,
+dimmed repo leaves), non-TTY prints one plain result line per scanned node. `runGateCmd` gains a tree branch
+that keeps a **single-package fast path** (`hasScannableChildren` false → legacy gate, unchanged); the tree
+path scans the root authoritatively from its on-disk `$PWD` and children from clones, reuses per-node
+heuristics/cache/committer-tracking/ack/`recordScan`, buffers per-node committer warnings until after the
+render (interleaving would corrupt the cursor math), and aggregates one exit: `2` if any malicious block, `1`
+if any suspicious block, else `0` (with a `tree_pause_seconds` hold on a clean TTY render). The ack
+short-circuit and tiered interactive override apply **per offending node**. Security-critical invariant kept:
+the package being built is always scanned from `$PWD`, never a clone — self-clones only discover/pre-scan/diff
+children. New config knobs `tree_scan` (default true), `tree_pause_seconds` (default 1), `clone_dir` (+ env
+overrides). Deviation from spec, documented: per-child **AUR/orphan** warnings are left to each child's own
+gate (avoids N× the network); per-child **committer** tracking is kept.
+
+Second half — **PKGBUILD diffs.** Additive `last_scanned_commit` column (`db.go`: schema + `ALTER` migration
++ `DBRecord`/lookup/upsert). `git.go` gains `gitHeadCommit` + `gitDiffFiles` (`git diff <last>..HEAD --
+PKGBUILD .SRCINFO *.install`). `analyze()` now prefers a real git diff from the stored commit to the current
+HEAD (falling back to the old whole-file line diff), feeds it to the LLM (the system prompt already says
+"focus on the diff"), and advances `last_scanned_commit` **only on a successful scan** (`storeVerdict` gained
+a `commit` param) so a failed/blocked infra result never hides the next real change. This is where an
+Atomic-Arch-style poisoned *update* surfaces. Note re the two merged sessions this builds on: `callProvider`
+now returns `(raw, TokenUsage, err)` and `heuristicCheck(pf)` returns `(*Verdict, []Finding)` — integrated
+around, not disturbed. Verified end-to-end with the static provider: single-package fast path (benign OK /
+malicious block), `tree_scan=false` opt-out, real 2-level tree (google-chrome cloned + scanned, glibc pruned
+repo, root authoritative → exit 0), malicious-root tree → exit 2 with focused block message, `waurden allow`
+→ ack short-circuit re-gate → exit 0, git diff computed + commit advanced after a new commit; TTY animated and
+non-TTY plain renders both observed; build/vet/`go test ./...` clean. (Unit coverage was validated with a
+temporary test that was removed — a separate session owns the test branch.)
 
 Latest changeset (DONE) — **heuristics overhaul: tiering, big pattern expansion, prompt-injection/Trojan-Source
 defense.** The built-in set was thin and any match hard-blocked at 0.95, so it couldn't grow without false

@@ -69,6 +69,60 @@ func fetchAURInfo(pkgbase string, timeout int) AURInfo {
 	return info
 }
 
+// aurPackageBases resolves a batch of package names to their AUR PackageBase in
+// one RPC call. It doubles as an AUR-membership check: a name absent from the
+// result is not on the AUR (so, given it also isn't an official-repo package, it
+// is an unresolvable leaf). The bool is false only when the RPC call itself
+// failed (network/transport) — distinct from "call succeeded, name not on AUR" —
+// so the tree resolver can fall back to a clone-by-name attempt rather than
+// silently dropping the dependency. Used by the dependency-tree scan.
+func aurPackageBases(names []string, timeout int) (map[string]string, bool) {
+	if len(names) == 0 {
+		return map[string]string{}, true
+	}
+	if timeout <= 0 {
+		timeout = 10
+	}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+
+	var b strings.Builder
+	b.WriteString("https://aur.archlinux.org/rpc/v5/info?")
+	for i, n := range names {
+		if i > 0 {
+			b.WriteByte('&')
+		}
+		b.WriteString("arg[]=")
+		b.WriteString(url.QueryEscape(n))
+	}
+
+	resp, err := client.Get(b.String())
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false
+	}
+
+	var rr struct {
+		Results []struct {
+			Name        string `json:"Name"`
+			PackageBase string `json:"PackageBase"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &rr); err != nil {
+		return nil, false
+	}
+	out := make(map[string]string, len(rr.Results))
+	for _, r := range rr.Results {
+		if r.Name != "" && r.PackageBase != "" {
+			out[r.Name] = r.PackageBase
+		}
+	}
+	return out, true
+}
+
 func fetchMaintainerInfo(client *http.Client, username string) *MaintainerInfo {
 	profileURL := "https://aur.archlinux.org/account/" + url.PathEscape(username)
 	resp, err := client.Get(profileURL)

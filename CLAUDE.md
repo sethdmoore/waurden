@@ -133,8 +133,13 @@ heuristics.go     built-in patterns + user TOML merge; initHeuristics()
 db.go             open/migrate/upsert/lookup; scans history (recordScan/recentScans)
 summary.go        waurden summary: current-state table, --history timeline, --targets recap
 gate.go           enforce policy → exit code; policyBlocks helper
-aur.go            AUR RPC + maintainer profile; orphan/change warnings
-upstream.go       (priority 3) git diff + VirusTotal
+deptree.go        resolveTree closure (pacman + AUR RPC classify) + runTreeGate orchestration
+clone.go          self-managed ~/.cache/waurden/aur clone/fetch (ensureClone)
+treeview.go       AURNode tree render: TTY animated (ANSI in-place) / non-TTY plain lines
+git.go            gitKnownCommitters + committer tracking; gitHeadCommit/gitDiffFiles for diffs
+tokens.go         token_usage ledger + `waurden tokens` report
+aur.go            AUR RPC + maintainer profile; orphan warnings; aurPackageBases (batch pkgbase)
+upstream.go       (priority 3) VirusTotal
 hooks/makepkg.conf.d/00-waurden.conf
 hooks/pacman/waurden.hook
 config/config.example.toml
@@ -154,6 +159,9 @@ type Config struct {
     Timeout     int      `toml:"timeout_seconds"`
     DBPath      string   `toml:"db_path"`
     DBBusyTimeout int    `toml:"db_busy_timeout_seconds"` // SQLite busy_timeout (default 7); 0 = fail fast
+    TreeScan    bool     `toml:"tree_scan"`         // front-loaded dep-tree gate (default true)
+    TreePauseSeconds int `toml:"tree_pause_seconds"` // hold a clean tree render (default 1; 0 = none)
+    CloneDir    string   `toml:"clone_dir"`         // self-managed AUR clones (default ~/.cache/waurden/aur)
     BlockOn     []string `toml:"block_on"`        // e.g. ["malicious"]
     WarnOn      []string `toml:"warn_on"`         // e.g. ["suspicious"]
     OnError     string   `toml:"on_error"`        // warn|block|allow
