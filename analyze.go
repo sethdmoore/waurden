@@ -23,6 +23,7 @@ type Verdict struct {
 	Summary        string    `json:"summary"`
 	SourceAnalyzed string    `json:"source_analyzed"`
 	ScanFailed     bool      `json:"-"` // set when scan failed; distinct from a real malicious verdict
+	Cached         bool      `json:"-"` // set when the verdict was reused from the DB, not freshly scanned
 }
 
 // Scan modes select which analysis engines run. Default is full (heuristic
@@ -269,13 +270,16 @@ func computeDiff(oldText, newText string) string {
 	return sb.String()
 }
 
-// verdictFromRecord reconstructs a Verdict from a cached packages row.
+// verdictFromRecord reconstructs a Verdict from a cached packages row. Cached is
+// set so callers can mark the output as reused (this is the only path that rebuilds
+// a verdict from the DB rather than a fresh scan).
 func verdictFromRecord(r *DBRecord) Verdict {
 	var v Verdict
 	v.Verdict = r.Verdict
 	v.Confidence = r.Confidence
 	v.Summary = r.Summary
 	v.SourceAnalyzed = r.SourceAnalyzed
+	v.Cached = true
 	if r.Findings != "" {
 		_ = json.Unmarshal([]byte(r.Findings), &v.Findings)
 	}

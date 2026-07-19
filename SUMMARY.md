@@ -187,5 +187,12 @@ this run. Skipped under `force` and `name=="unknown"`, same as the top cache. Re
 still mid-LLM-call (not yet committed) is not caught — acceptable (an extra scan, not a security gap).
 Build/vet/test clean.
 
+Follow-up (DONE) — **mark cache hits in the output.** A reused verdict was indistinguishable from a
+fresh scan. Added a `Cached bool json:"-"` field to `Verdict` (mirrors `ScanFailed`), set in
+`verdictFromRecord` — the single choke point both the top cache and the recently-scanned guard funnel
+through. A new `cachedTag(v)` helper returns `" (cached)"` when set, appended to the gate OK one-liner
+(`… — OK (1.00) <summary> (cached)`) and the `scan` report's `Verdict:` line. Display only; nothing
+persisted. Verified with the static provider: first gate scans, second gate + `scan` show `(cached)`.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.

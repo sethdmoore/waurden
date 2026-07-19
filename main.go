@@ -351,7 +351,7 @@ func runGateCmd(args []string) {
 	// concurrent gate process and is stated once in the `summary` recap); the
 	// info summary is appended so the line carries something package-specific.
 	if v.Verdict == "ok" && !blocked {
-		fmt.Fprintf(os.Stderr, "wAURden: %s — OK (%.2f) %s\n", pf.Name, v.Confidence, truncate(v.Summary))
+		fmt.Fprintf(os.Stderr, "wAURden: %s — OK (%.2f) %s%s\n", pf.Name, v.Confidence, truncate(v.Summary), cachedTag(v))
 		os.Exit(0)
 	}
 
@@ -704,9 +704,18 @@ func writeFile(path, content string) error {
 	return err
 }
 
+// cachedTag returns " (cached)" when a verdict was reused from the DB rather than
+// freshly scanned, so a cache hit is distinguishable from a real scan in the output.
+func cachedTag(v Verdict) string {
+	if v.Cached {
+		return " (cached)"
+	}
+	return ""
+}
+
 func printReport(w *os.File, pkgname string, v Verdict, provider string) {
 	fmt.Fprintf(w, "Package: %s\n", pkgname)
-	fmt.Fprintf(w, "Verdict: %s (confidence: %.2f)\n", strings.ToUpper(v.Verdict), v.Confidence)
+	fmt.Fprintf(w, "Verdict: %s (confidence: %.2f)%s\n", strings.ToUpper(v.Verdict), v.Confidence, cachedTag(v))
 	fmt.Fprintf(w, "Summary: %s\n", v.Summary)
 
 	if len(v.Findings) > 0 {
