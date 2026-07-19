@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS scans (
 
 const scansIndex = `CREATE INDEX IF NOT EXISTS idx_scans_time ON scans(scanned_at DESC);`
 
-func openDB(path string) (*sql.DB, error) {
+func openDB(path string, busyTimeoutSeconds int) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
@@ -94,7 +94,15 @@ func openDB(path string) (*sql.DB, error) {
 	// failures during a batched build. busy_timeout makes contenders wait instead
 	// of erroring; WAL lets readers and the writer coexist. (foreign_keys stays
 	// OFF deliberately — see the scans-table note above.)
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	//
+	// The wait is bounded, not unbounded: busy_timeout retries internally for at
+	// most this many milliseconds of wall-clock, then returns SQLITE_BUSY (the
+	// gate then fails closed rather than hanging the build). Configurable via
+	// db_busy_timeout_seconds; a negative value is clamped to 0 (fail fast).
+	if busyTimeoutSeconds < 0 {
+		busyTimeoutSeconds = 0
+	}
+	dsn := fmt.Sprintf("%s?_pragma=busy_timeout(%d)&_pragma=journal_mode(WAL)", path, busyTimeoutSeconds*1000)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)

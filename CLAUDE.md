@@ -153,6 +153,7 @@ type Config struct {
     APIKeyEnv   string   `toml:"api_key_env"`
     Timeout     int      `toml:"timeout_seconds"`
     DBPath      string   `toml:"db_path"`
+    DBBusyTimeout int    `toml:"db_busy_timeout_seconds"` // SQLite busy_timeout (default 7); 0 = fail fast
     BlockOn     []string `toml:"block_on"`        // e.g. ["malicious"]
     WarnOn      []string `toml:"warn_on"`         // e.g. ["suspicious"]
     OnError     string   `toml:"on_error"`        // warn|block|allow

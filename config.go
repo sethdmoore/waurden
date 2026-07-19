@@ -17,6 +17,11 @@ type Config struct {
 	APIKeyEnv   string   `toml:"api_key_env"     envconfig:"API_KEY_ENV"` // fallback: read key from this env var
 	Timeout     int      `toml:"timeout_seconds" envconfig:"TIMEOUT"`
 	DBPath      string   `toml:"db_path"         envconfig:"DB_PATH"`
+	// DBBusyTimeout is how long (seconds) a gate waits for a locked DB before
+	// giving up with SQLITE_BUSY. yay runs the makepkg.conf.d hook once per
+	// package concurrently, so gates contend for the write lock; this bounds the
+	// wait. 0 = fail fast (no wait); negative is clamped to 0.
+	DBBusyTimeout int `toml:"db_busy_timeout_seconds" envconfig:"DB_BUSY_TIMEOUT"`
 	BlockOn     []string `toml:"block_on"        envconfig:"BLOCK_ON"`
 	WarnOn      []string `toml:"warn_on"         envconfig:"WARN_ON"`
 	OnError     string   `toml:"on_error"        envconfig:"ON_ERROR"`
@@ -29,11 +34,12 @@ type Config struct {
 // loadConfig returns the merged config, whether any config file was found, and any error.
 func loadConfig() (Config, bool, error) {
 	cfg := Config{
-		Provider: "mock",
-		Timeout:  60,
-		BlockOn:  []string{"malicious"},
-		WarnOn:   []string{"suspicious"},
-		OnError:  "warn",
+		Provider:      "mock",
+		Timeout:       60,
+		DBBusyTimeout: 7,
+		BlockOn:       []string{"malicious"},
+		WarnOn:        []string{"suspicious"},
+		OnError:       "warn",
 	}
 
 	home, err := os.UserHomeDir()

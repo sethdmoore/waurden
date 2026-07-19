@@ -194,7 +194,7 @@ func exitUnconfigured(isGate bool) {
 }
 
 func openDBFromConfig(cfg Config) (*sql.DB, error) {
-	return openDB(cfg.DBPath)
+	return openDB(cfg.DBPath, cfg.DBBusyTimeout)
 }
 
 func runScan(args []string) {
