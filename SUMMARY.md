@@ -245,8 +245,22 @@ around, not disturbed. Verified end-to-end with the static provider: single-pack
 malicious block), `tree_scan=false` opt-out, real 2-level tree (google-chrome cloned + scanned, glibc pruned
 repo, root authoritative → exit 0), malicious-root tree → exit 2 with focused block message, `waurden allow`
 → ack short-circuit re-gate → exit 0, git diff computed + commit advanced after a new commit; TTY animated and
-non-TTY plain renders both observed; build/vet/`go test ./...` clean. (Unit coverage was validated with a
-temporary test that was removed — a separate session owns the test branch.)
+non-TTY plain renders both observed; build/vet/`go test ./...` clean.
+
+Follow-up (DONE) — **unit tests for the dep-tree feature** (satisfying CLAUDE.md rule #4, "every function
+must have a unit test"). New `deptree_test.go` (parseDeps/stripDepName/isDependsKey; `resolveTreeWith` driven
+by an injectable **fakeResolver** — classification, cycle/diamond guard, unknown-name fast path, RPC-fail
+clone-by-name fallback, maxDepth cap, clone-error node; flatten/worstNode/treeExitCode/countAURNodes;
+`scanNode` root+child against a real DB + static provider), `treeview_test.go` (node line markers, per-status
+text, verdict tail, `dim`, in-place `renderTree` cursor math), `clone_test.go` (`runGit`; `ensureClone`
+fresh-clone + refresh + no-dir error, driven against a **local upstream git repo**), `diff_test.go`
+(`gitHeadCommit`/`gitDiffFiles`, `last_scanned_commit` round-trip, and analyze() preferring a real git diff
+end-to-end), `aur_pkgbases_test.go` (`aurPackageBases` via **httptest**: success/absent-name/empty/transport-
+error/bad-JSON), and `config_tree_test.go` (`expandHome`; TreeScan/TreePauseSeconds/CloneDir defaults, file
+opt-out, env override, `~` expansion). Two tiny testability seams added so no live network is needed:
+`aurGitBase` (clone.go) and `aurRPCInfoURL` (aur.go), both plain `var`s overridden per-test; the three
+`WAURDEN_TREE_*`/`CLONE_DIR` env vars were added to `clearEnv`. In-process heuristic tests call
+`initHeuristics()` (no second `TestMain` — one already exists). `go test -race ./...` green; vet/gofmt clean.
 
 Latest changeset (DONE) — **heuristics overhaul: tiering, big pattern expansion, prompt-injection/Trojan-Source
 defense.** The built-in set was thin and any match hard-blocked at 0.95, so it couldn't grow without false

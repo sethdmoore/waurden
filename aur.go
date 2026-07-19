@@ -11,6 +11,10 @@ import (
 	"time"
 )
 
+// aurRPCInfoURL is the AUR RPC info endpoint. A var (not a const) so a test can
+// point aurPackageBases at an httptest server instead of the live AUR.
+var aurRPCInfoURL = "https://aur.archlinux.org/rpc/v5/info"
+
 type AURInfo struct {
 	Maintainer     *string
 	LastModified   int64
@@ -86,7 +90,7 @@ func aurPackageBases(names []string, timeout int) (map[string]string, bool) {
 	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
 
 	var b strings.Builder
-	b.WriteString("https://aur.archlinux.org/rpc/v5/info?")
+	b.WriteString(aurRPCInfoURL + "?")
 	for i, n := range names {
 		if i > 0 {
 			b.WriteByte('&')

@@ -24,9 +24,14 @@
    data** (real sample PKGBUILDs in `tests/samples/`, real temp `modernc/sqlite` DBs,
    `httptest` servers, real temp git repos) — not trivial stubs that only assert `err == nil`.
    `os.Exit`-calling command handlers are exercised as a built subprocess (see
-   `cli_integration_test.go`). **Backfill gap:** the dep-tree feature (`deptree.go`,
-   `clone.go`, `treeview.go`, and the functions added to `analyze.go`/`config.go`/`db.go`/
-   `git.go`/`aur.go`/`main.go` for it) still needs its unit tests written.
+   `cli_integration_test.go`). The dep-tree feature is covered by `deptree_test.go`,
+   `treeview_test.go`, `clone_test.go`, `diff_test.go`, `aur_pkgbases_test.go`, and
+   `config_tree_test.go`; `resolveTree` is tested through the injectable `treeResolver`
+   (no pacman/network/clone), and two small URL seams (`aurGitBase`, `aurRPCInfoURL`) let
+   `ensureClone`/`aurPackageBases` run against a local upstream repo / `httptest` server.
+   In-process tests that hit the heuristic engine must call `initHeuristics()` first
+   (`main()` does it, the test binary does not); a single `TestMain` already lives in
+   `cli_integration_test.go`, so add the call per-test rather than a second `TestMain`.
 
 ---
 

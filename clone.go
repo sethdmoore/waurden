@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// aurGitBase is the base URL clones are pulled from. A var (not a const) so a test
+// can point ensureClone at a local upstream repo instead of the live AUR.
+var aurGitBase = "https://aur.archlinux.org/"
+
 // runGit executes a git command with a wall-clock timeout, returning its stdout.
 // All git use in wAURden is advisory (clones are inert PKGBUILD text we discover
 // and diff, never build), so callers treat a non-nil error as "no data" rather
@@ -59,7 +63,7 @@ func ensureClone(cfg Config, pkgbase string) (string, error) {
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return "", fmt.Errorf("create clone dir: %w", err)
 	}
-	url := "https://aur.archlinux.org/" + pkgbase + ".git"
+	url := aurGitBase + pkgbase + ".git"
 	if _, err := runGit(cfg.Timeout, "clone", "--depth", "50", url, dir); err != nil {
 		return "", fmt.Errorf("clone %s: %w", pkgbase, err)
 	}
