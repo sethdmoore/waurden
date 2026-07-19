@@ -151,3 +151,17 @@ cached by content hash — unchanged PKGBUILDs are not re-analyzed.
 ```sh
 sqlite3 ~/.local/share/waurden/waurden.db "SELECT name, verdict, last_scanned FROM packages;"
 ```
+
+### Concurrent builds
+
+AUR helpers like `yay` build a batch of packages at once, running the makepkg
+hook — and therefore `waurden gate` — as several processes concurrently. These
+contend for the SQLite write lock, so the database is opened in WAL mode with a
+bounded busy timeout: a gate that hits a locked DB waits rather than failing
+immediately. The wait is capped, not indefinite — if it expires, the gate fails
+closed (blocks the build) rather than hanging it. Tune the cap with
+`db_busy_timeout_seconds` (default `7`; `0` = fail fast):
+
+```toml
+db_busy_timeout_seconds = 7
+```
