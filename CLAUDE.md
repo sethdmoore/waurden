@@ -15,6 +15,36 @@
 
 3. **Update `SUMMARY.md`** (2-paragraph max) at the end of any session with meaningful progress. A fresh session reads it first to understand current state without re-reading this file.
 
+4. **Every function must have a unit test — tests are not optional.** When you add or
+   change a function, add or update its test in the same changeset. Run `go test ./...`
+   (green, and ideally `-race`) before every push; a red suite does not get pushed. The
+   test suite lives alongside the code in `*_test.go` (package `main`); shared helpers are
+   in `helpers_test.go` (`newTestDB`, `captureStdout`/`captureStderr`, `sampleDir`) and
+   `heuristics_test.go` (`loadSample`) — reuse them, don't redefine. Tests must use **real
+   data** (real sample PKGBUILDs in `tests/samples/`, real temp `modernc/sqlite` DBs,
+   `httptest` servers, real temp git repos) — not trivial stubs that only assert `err == nil`.
+   `os.Exit`-calling command handlers are exercised as a built subprocess (see
+   `cli_integration_test.go`). **Backfill gap:** the dep-tree feature (`deptree.go`,
+   `clone.go`, `treeview.go`, and the functions added to `analyze.go`/`config.go`/`db.go`/
+   `git.go`/`aur.go`/`main.go` for it) still needs its unit tests written.
+
+---
+
+## Known bugs / defects to fix
+
+- **`extractPkgname` does not split an inline multi-element `pkgname` array (collect.go:141).**
+  The code comment claims `pkgname=('foo' 'bar') → take first`, but the implementation only
+  strips the surrounding parens/quotes and returns the whole inner string `foo' 'bar` — it
+  never splits on whitespace to take the first element. Impact: for a **split package defined
+  with an inline array in the PKGBUILD and no `.SRCINFO`**, `pf.Name` becomes a malformed
+  multi-name string, which then poisons the verdict cache key, the AUR lookup (`fetchAURInfo`),
+  and the DB row key. Mitigated in practice because `collectFiles` prefers the `.SRCINFO`
+  `pkgname` (`extractPkgnameFromSrcinfo`) when a `.SRCINFO` is present, which is the common
+  case. **Fix:** after trimming the parens, split on whitespace and take the first token (then
+  strip its quotes), or reuse the `.SRCINFO`/`expandShellVars` paths. The behavior is currently
+  pinned by `TestExtractPkgname` (case `array-multi-not-split`) in `collect_test.go`, which
+  documents the bug rather than the desired behavior — update that assertion when you fix it.
+
 ---
 
 ## 1. Problem & motivation
