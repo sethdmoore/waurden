@@ -1,0 +1,28 @@
+# wAURden test sample — BENIGN. A normal daemon package. It legitimately ships a
+# systemd unit (staged into ${pkgdir}) and its .install creates a system user and
+# reloads systemd. These are advisory signals at most — they MUST NOT hard-block.
+pkgname=exampled
+pkgver=2.4.0
+pkgrel=1
+pkgdesc="Example daemon"
+arch=('x86_64')
+url="https://example.com"
+license=('MIT')
+install=exampled.install
+source=("https://example.com/exampled-2.4.0.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    make
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" install
+    # ship the service unit and a default cron entry — staged under ${pkgdir}
+    install -Dm644 exampled.service "${pkgdir}/usr/lib/systemd/system/exampled.service"
+    install -Dm644 exampled.cron "${pkgdir}/etc/cron.d/exampled"
+    # drop a setuid helper (legitimate: shipped binary)
+    chmod 4755 "${pkgdir}/usr/bin/exampled-helper"
+}

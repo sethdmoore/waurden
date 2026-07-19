@@ -8,6 +8,15 @@
 #   regex    — Go regular expression (RE2 syntax)
 #   severity — one of: info, low, medium, high, critical
 #   detail   — human-readable description shown in findings
+#
+# Severity picks the tier:
+#   critical / high  → HARD BLOCK: verdict "malicious", the LLM is skipped. Use
+#                      only for near-zero-false-positive patterns (nothing a
+#                      legitimate PKGBUILD or .install scriptlet ever does).
+#   medium / low     → ADVISORY: does NOT block. The match is handed to the LLM
+#                      as a hint and shown as "suspicious" in heuristics-only mode.
+#                      Use this for broad, higher-recall signals.
+# When unsure, prefer medium — a false hard-block stops a user's build.
 
 # Example: flag any use of dd writing to a block device
 [[pattern]]

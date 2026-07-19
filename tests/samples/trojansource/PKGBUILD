@@ -1,0 +1,18 @@
+# wAURden test sample — MALICIOUS (inert). Trojan Source / hidden Unicode.
+# The comment below contains a U+202E RIGHT-TO-LEFT OVERRIDE control character,
+# so what a human reviewer *reads* differs from what the shell *executes*.
+pkgname=looks-fine
+pkgver=1.0
+pkgrel=1
+pkgdesc="Looks fine"
+arch=('any')
+url="https://example.com"
+license=('MIT')
+source=("https://example.com/looks-fine-1.0.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    # the next line hides a bidi override: ‮ }gnihtemos evil{ #
+    make
+}

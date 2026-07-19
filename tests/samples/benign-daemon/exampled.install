@@ -1,0 +1,15 @@
+post_install() {
+    # create the service account (legitimate scriptlet behavior)
+    useradd --system --home-dir /var/lib/exampled --shell /usr/bin/nologin exampled || true
+    systemctl daemon-reload
+    echo "Run 'systemctl enable --now exampled' to start the service."
+}
+
+post_upgrade() {
+    systemctl daemon-reload
+}
+
+post_remove() {
+    userdel exampled || true
+    systemctl daemon-reload
+}

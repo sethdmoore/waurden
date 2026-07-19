@@ -194,6 +194,43 @@ through. A new `cachedTag(v)` helper returns `" (cached)"` when set, appended to
 (`… — OK (1.00) <summary> (cached)`) and the `scan` report's `Verdict:` line. Display only; nothing
 persisted. Verified with the static provider: first gate scans, second gate + `scan` show `(cached)`.
 
+Next up (SPEC WRITTEN, NOT YET IMPLEMENTED) — **front-loaded dependency-tree scan + self-managed clones
++ diffs.** Full spec in CLAUDE.md §10 ("Front-loaded dependency-tree scan…"). Corrects the earlier
+"grouped pre-scan is impossible" claim: a single gate *can* discover the whole tree itself via
+`.SRCINFO` depends + `pacman -Si` classification — no AUR-helper coupling. Locked decisions: never parse
+any helper's state, never wrap the helper (trigger stays the `makepkg.conf.d` gate, made tree-aware);
+wAURden owns its own AUR clones under `~/.cache/waurden/aur/<pkgbase>` (`clone.go`) and computes PKGBUILD
+diffs (`last_scanned_commit` column → `git diff last..HEAD` fed to the LLM). Security-critical principle:
+the package actually being built is always scanned from its **on-disk `$PWD`**, never a fresh clone;
+self-clones only discover/pre-scan/diff the *children*, each still re-scanned at its own gate. New files
+`deptree.go`/`clone.go`/`treeview.go`; live tree render (TTY animated, non-TTY plain lines); exit `2`
+malicious / `1` suspicious / `0` clean; config knobs `tree_scan`/`tree_pause_seconds`/`clone_dir`.
+Ordering caveat (front-loaded render maximal when the helper gates the root early, e.g. yay's verify
+phase; per-package security guarantee unchanged) documented honestly. Shipping order + edge cases in the
+spec.
+
+Latest changeset (DONE) — **heuristics overhaul: tiering, big pattern expansion, prompt-injection/Trojan-Source
+defense.** The built-in set was thin and any match hard-blocked at 0.95, so it couldn't grow without false
+blocks. Fix: `splitVerdict` **tiers by severity** — critical/high → hard block (skip LLM, 0.95/0.90);
+medium/low → *advisory* (never blocks; fed to the LLM in a trusted `<heuristic_notes>` block via
+`buildUserContent`, folded into stored findings by `mergeFindings`, and shown as `suspicious` offline). This
+lets the set be broad: added reverse shells (`/dev/tcp`, `nc -e`, `socat`), decode-then-pipe obfuscation
+(base64/xz/tr | sh — xz-backdoor style), broadened exfil (browser/wallet/cookie stores, `env|curl`, HTTP POST
+of `$vars`), rootkit/privesc primitives (`sudoers`, `ld.so.preload`, `authorized_keys`, eBPF/`insmod`,
+setuid, `chattr +i`), destructive (`rm -rf /`, `dd`, `mkfs`), and package-manager installs (Atomic-Arch
+typosquat class) — the legit-in-scriptlet ones (useradd/systemctl/npm/setuid) sit at medium so a normal daemon
+package doesn't hard-block. New **prompt-injection layer** (`scanInjection`/`injectionPatterns`/
+`suspiciousUnicode`, all critical, scanned over the RAW PKGBUILD **and** helper/`.install` files): "ignore
+previous instructions" family, role reassignment, injected verdict JSON, our own wrapper delimiters, chat/model
+control tokens (`<|im_start|>`, `<<SYS>>`, `[INST]`), and invisible/bidi Unicode (Trojan Source, CVE-2021-42574)
+— this blocks a manipulative package *before* the LLM (which is what injection subverts) ever runs. `heuristicCheck`
+now takes `PackageFiles` and scans PKGBUILD + all helpers. **Bug found & fixed via end-to-end test:** the
+`static`/mock provider re-scanned the fully-assembled prompt, so it false-fired the injection detector on
+wAURden's own `<pkgbuild>` wrapper (every package → MALICIOUS); `mockPayload` now extracts just the wrapped
+package sections. Added inert, labeled sample PKGBUILDs (one per attack class) under `tests/samples/` and
+`heuristics_test.go` asserting the full tiering matrix. Verified end-to-end with the static provider: benign→OK,
+benign-daemon→SUSPICIOUS (gate exit 0), all 10 attack classes→MALICIOUS (gate exit 1); build/vet/test clean.
+
 Latest changeset (DONE, branch `feature/token-accounting`) — **LLM token accounting.** New append-only
 `token_usage` table (`db.go`, additive `CREATE TABLE IF NOT EXISTS` + index — old DBs gain it, no wipe):
 one row per successful provider call (session, package, used_at UTC, provider, model, input/output/total
