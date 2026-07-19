@@ -194,5 +194,20 @@ through. A new `cachedTag(v)` helper returns `" (cached)"` when set, appended to
 (`… — OK (1.00) <summary> (cached)`) and the `scan` report's `Verdict:` line. Display only; nothing
 persisted. Verified with the static provider: first gate scans, second gate + `scan` show `(cached)`.
 
+Next up (SPEC WRITTEN, NOT YET IMPLEMENTED) — **front-loaded dependency-tree scan + self-managed clones
++ diffs.** Full spec in CLAUDE.md §10 ("Front-loaded dependency-tree scan…"). Corrects the earlier
+"grouped pre-scan is impossible" claim: a single gate *can* discover the whole tree itself via
+`.SRCINFO` depends + `pacman -Si` classification — no AUR-helper coupling. Locked decisions: never parse
+any helper's state, never wrap the helper (trigger stays the `makepkg.conf.d` gate, made tree-aware);
+wAURden owns its own AUR clones under `~/.cache/waurden/aur/<pkgbase>` (`clone.go`) and computes PKGBUILD
+diffs (`last_scanned_commit` column → `git diff last..HEAD` fed to the LLM). Security-critical principle:
+the package actually being built is always scanned from its **on-disk `$PWD`**, never a fresh clone;
+self-clones only discover/pre-scan/diff the *children*, each still re-scanned at its own gate. New files
+`deptree.go`/`clone.go`/`treeview.go`; live tree render (TTY animated, non-TTY plain lines); exit `2`
+malicious / `1` suspicious / `0` clean; config knobs `tree_scan`/`tree_pause_seconds`/`clone_dir`.
+Ordering caveat (front-loaded render maximal when the helper gates the root early, e.g. yay's verify
+phase; per-package security guarantee unchanged) documented honestly. Shipping order + edge cases in the
+spec.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
