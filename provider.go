@@ -17,16 +17,18 @@ import (
 // Gemini users: set provider="openai", base_url="https://generativelanguage.googleapis.com/v1beta/openai".
 // Ollama users: set provider="openai", base_url="http://localhost:11434/v1".
 // "static" (alias "mock") runs heuristics only — no LLM, no network calls.
-func callProvider(cfg Config, systemPrompt, userContent string) (string, error) {
+func callProvider(cfg Config, systemPrompt, userContent string) (string, TokenUsage, error) {
 	switch cfg.Provider {
 	case "anthropic":
 		return callAnthropic(cfg, systemPrompt, userContent)
 	case "openai":
 		return callOpenAI(cfg, systemPrompt, userContent)
 	case "static", "mock":
-		return callMock(cfg, userContent)
+		// The static engine runs local heuristics — no network, no tokens.
+		content, err := callMock(cfg, userContent)
+		return content, TokenUsage{}, err
 	default:
-		return "", fmt.Errorf("unknown provider %q (valid: anthropic, openai, static)", cfg.Provider)
+		return "", TokenUsage{}, fmt.Errorf("unknown provider %q (valid: anthropic, openai, static)", cfg.Provider)
 	}
 }
 
@@ -188,10 +190,10 @@ func resolveAPIKey(cfg Config) (string, error) {
 	return "", fmt.Errorf("no api_key in config and no api_key_env specified")
 }
 
-func callAnthropic(cfg Config, systemPrompt, userContent string) (string, error) {
+func callAnthropic(cfg Config, systemPrompt, userContent string) (string, TokenUsage, error) {
 	apiKey, err := resolveAPIKey(cfg)
 	if err != nil {
-		return "", err
+		return "", TokenUsage{}, err
 	}
 	base := "https://api.anthropic.com"
 	if cfg.BaseURL != "" {
@@ -220,27 +222,33 @@ func callAnthropic(cfg Config, systemPrompt, userContent string) (string, error)
 
 	respBody, err := postJSON(httpClient(cfg), url, headers, body)
 	if err != nil {
-		return "", err
+		return "", TokenUsage{}, err
 	}
 
 	var result struct {
 		Content []struct {
 			Text string `json:"text"`
 		} `json:"content"`
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse anthropic response: %w", err)
+		return "", TokenUsage{}, fmt.Errorf("parse anthropic response: %w", err)
 	}
 	if len(result.Content) == 0 {
-		return "", fmt.Errorf("empty anthropic response")
+		return "", TokenUsage{}, fmt.Errorf("empty anthropic response")
 	}
-	return result.Content[0].Text, nil
+	text := result.Content[0].Text
+	usage := usageOrEstimate(result.Usage.InputTokens, result.Usage.OutputTokens, systemPrompt+userContent, text)
+	return text, usage, nil
 }
 
-func callOpenAI(cfg Config, systemPrompt, userContent string) (string, error) {
+func callOpenAI(cfg Config, systemPrompt, userContent string) (string, TokenUsage, error) {
 	apiKey, err := resolveAPIKey(cfg)
 	if err != nil {
-		return "", err
+		return "", TokenUsage{}, err
 	}
 	base := "https://api.openai.com/v1"
 	if cfg.BaseURL != "" {
@@ -267,7 +275,7 @@ func callOpenAI(cfg Config, systemPrompt, userContent string) (string, error) {
 
 	respBody, err := postJSON(httpClient(cfg), url, headers, body)
 	if err != nil {
-		return "", err
+		return "", TokenUsage{}, err
 	}
 
 	var result struct {
@@ -276,14 +284,20 @@ func callOpenAI(cfg Config, systemPrompt, userContent string) (string, error) {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", fmt.Errorf("parse openai response: %w", err)
+		return "", TokenUsage{}, fmt.Errorf("parse openai response: %w", err)
 	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty openai response")
+		return "", TokenUsage{}, fmt.Errorf("empty openai response")
 	}
-	return result.Choices[0].Message.Content, nil
+	content := result.Choices[0].Message.Content
+	usage := usageOrEstimate(result.Usage.PromptTokens, result.Usage.CompletionTokens, systemPrompt+userContent, content)
+	return content, usage, nil
 }
 
 func callMock(cfg Config, userContent string) (string, error) {

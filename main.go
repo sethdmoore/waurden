@@ -68,6 +68,8 @@ func main() {
 		runShow(args)
 	case "summary":
 		runSummary(args)
+	case "tokens":
+		runTokens(args)
 	case "forget":
 		runForget(args)
 	case "allow":
@@ -99,6 +101,8 @@ Usage:
                              --targets   read pkgnames on stdin (pacman hook use)
   waurden allow [DIR]        acknowledge a blocked package for its current
                              PKGBUILD hash (cleared when the PKGBUILD changes)
+  waurden tokens             report LLM token usage: this run / today / week /
+                             month / all time
   waurden forget <pkgname>   drop the cached verdict so the next scan re-runs
   waurden install-hooks      install makepkg and pacman hooks (requires root)
   waurden uninstall-hooks    remove installed hooks (requires root)
@@ -265,6 +269,18 @@ func runScan(args []string) {
 	}
 
 	printReport(os.Stdout, pf.Name, v, providerLabel(cfg))
+
+	// Show what this scan cost, when it actually called an LLM. A cache hit or the
+	// static engine records no token row, so this stays quiet in those cases.
+	if t, err := sumSession(db, tokenSession); err == nil && t.Total > 0 {
+		est := ""
+		if t.HasEstimated {
+			est = " (estimated)"
+		}
+		fmt.Printf("Tokens this run: %s in + %s out = %s total%s\n",
+			commafy(t.Input), commafy(t.Output), commafy(t.Total), est)
+		fmt.Println("Cumulative usage: waurden tokens")
+	}
 }
 
 func runGateCmd(args []string) {

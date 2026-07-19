@@ -104,6 +104,7 @@ waurden scan [DIR]        # Scan a package dir, print report, store in DB
 waurden gate [DIR]        # Scan + enforce; exits non-zero to abort makepkg
 waurden show <pkgname>    # Show stored verdict for a package
 waurden summary           # Table of all scanned packages with verdicts
+waurden tokens            # LLM token usage: this run / today / week / month / all time
 waurden install-hooks     # Install makepkg + pacman hooks (requires root)
 waurden uninstall-hooks   # Remove hooks
 waurden version
@@ -151,6 +152,35 @@ cached by content hash — unchanged PKGBUILDs are not re-analyzed.
 ```sh
 sqlite3 ~/.local/share/waurden/waurden.db "SELECT name, verdict, last_scanned FROM packages;"
 ```
+
+### Token accounting
+
+Every LLM call records its token usage to a `token_usage` table in the same
+database, so you can see what wAURden costs you:
+
+```sh
+waurden tokens
+```
+
+```
+wAURden token usage
+              SCANS  INPUT  OUTPUT  TOTAL
+    This run      1    433      24    457
+       Today      6  8,102     311  8,413
+   This week     22 29,540   1,204 30,744
+  This month     22 29,540   1,204 30,744
+    All time     41 55,180   2,388 57,568
+```
+
+Counts are exact when the provider reports usage in its response (Anthropic
+always does; most OpenAI-compatible endpoints do). When a provider omits usage,
+wAURden falls back to a ~4-characters-per-token estimate and marks those totals
+with a `*`. The `static`/heuristics engine makes no network call and consumes no
+tokens, so it is never counted. Cache hits reuse a stored verdict without calling
+the LLM, so they cost nothing either. "This run" is the most recent invocation;
+under a `yay` batch each package is gated in its own process, so it reflects the
+last package scanned rather than the whole batch — use the time windows for the
+batch total.
 
 ### Concurrent builds
 

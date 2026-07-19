@@ -83,6 +83,29 @@ CREATE TABLE IF NOT EXISTS scans (
 
 const scansIndex = `CREATE INDEX IF NOT EXISTS idx_scans_time ON scans(scanned_at DESC);`
 
+// token_usage is an append-only ledger of LLM token consumption: one row per
+// successful provider call. It is deliberately separate from scans/packages —
+// a cache-hit scan writes no token row (no call was made), and a single scan
+// only ever makes one call, so this is not derivable from the scan history.
+// `session` groups the rows written by one process invocation ("this run");
+// counts are exact when the provider reports usage, else estimated (see
+// tokens.go). Additive CREATE TABLE IF NOT EXISTS — old DBs gain it, no wipe.
+const tokenUsageSchema = `
+CREATE TABLE IF NOT EXISTS token_usage (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session         TEXT NOT NULL,
+    package         TEXT,
+    used_at         TEXT NOT NULL,
+    provider        TEXT,
+    model           TEXT,
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    total_tokens    INTEGER NOT NULL DEFAULT 0,
+    estimated       INTEGER NOT NULL DEFAULT 0
+);`
+
+const tokenUsageIndex = `CREATE INDEX IF NOT EXISTS idx_token_usage_time ON token_usage(used_at DESC);`
+
 func openDB(path string, busyTimeoutSeconds int) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
@@ -110,7 +133,7 @@ func openDB(path string, busyTimeoutSeconds int) (*sql.DB, error) {
 	// Each statement runs separately: database/sql's Exec is one-statement, and
 	// CREATE TABLE IF NOT EXISTS makes adding the scans table safe on an existing
 	// DB (additive, no wipe — see MIGRATIONS.md).
-	for _, stmt := range []string{schema, scansSchema, scansIndex} {
+	for _, stmt := range []string{schema, scansSchema, scansIndex, tokenUsageSchema, tokenUsageIndex} {
 		if _, err := db.Exec(stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("migrate db: %w", err)

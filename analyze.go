@@ -391,7 +391,15 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	// it per line is noise. It is stated once in the end-of-run `summary` recap.
 	fmt.Fprintf(os.Stderr, "wAURden: scanning %s…\n", pf.Name)
 
-	raw, err := callProvider(cfg, systemPrompt, userContent)
+	raw, usage, err := callProvider(cfg, systemPrompt, userContent)
+	// Count the tokens this call consumed, before parsing — a call that succeeds
+	// on the wire but returns unparseable content was still billed. static/mock
+	// returns a zero usage (no network, no tokens), so nothing is recorded for it.
+	if err == nil && usage.Total() > 0 {
+		if e := recordTokenUsage(db, tokenSession, pf.Name, cfg.Provider, cfg.Model, usage); e != nil {
+			fmt.Fprintf(os.Stderr, "wAURden: could not record token usage: %v\n", e)
+		}
+	}
 	if err != nil {
 		// Never cache a failed scan. verdictFromOnError returns a verdict="ok"
 		// fallback whose ScanFailed flag is json:"-", so it is NOT reconstructed

@@ -194,5 +194,26 @@ through. A new `cachedTag(v)` helper returns `" (cached)"` when set, appended to
 (`… — OK (1.00) <summary> (cached)`) and the `scan` report's `Verdict:` line. Display only; nothing
 persisted. Verified with the static provider: first gate scans, second gate + `scan` show `(cached)`.
 
+Latest changeset (DONE, branch `feature/token-accounting`) — **LLM token accounting.** New append-only
+`token_usage` table (`db.go`, additive `CREATE TABLE IF NOT EXISTS` + index — old DBs gain it, no wipe):
+one row per successful provider call (session, package, used_at UTC, provider, model, input/output/total
+tokens, `estimated` flag). `callProvider`/`callAnthropic`/`callOpenAI` now return a `TokenUsage`
+(`tokens.go`) alongside the content: exact counts parsed from the response `usage` object (Anthropic
+`input_tokens`/`output_tokens`; OpenAI `prompt_tokens`/`completion_tokens`), falling back via
+`usageOrEstimate` to a ~4-chars-per-token estimate (`estimateTokens`) when the provider omits usage.
+`callMock` returns zero usage — the static/heuristics engine makes no call and is never counted; cache
+hits also record nothing (no call happens). `analyze()` calls `recordTokenUsage` right after a successful
+`callProvider`, **before** `parseVerdict`, so tokens are counted even if the response fails to parse (they
+were still billed); recording is non-fatal. A process-wide `tokenSession` id groups one invocation's rows.
+New `waurden tokens` command (`runTokens`/`printTokenReport`) reports **This run** (latest session) /
+**Today** / **This week** (ISO, Mon start) / **This month** / **All time**, windows computed in local time
+and compared against the stored UTC RFC3339 timestamps; a `*` + footnote marks any window containing an
+estimated call; `commafy` adds thousands separators. `scan` also prints a `Tokens this run:` line when it
+actually called an LLM. Root→user DB resolves via `effectiveHome()` like `summary`. Verified end-to-end
+against mock OpenAI servers: exact reported usage recorded and summed across windows; estimated fallback
+recorded and flagged with `*`; heuristic/cache-hit paths record nothing; empty-DB message; `scan --force`
+re-scan path. Note: `base_url` is not part of the cache key, so swapping endpoints at the same
+provider/model is a cache hit (no new token row) — documented gap, same as verdict caching.
+
 Also still open: verify `makepkg.conf.d` sourcing order on a real Arch system with root, then test real
 LLM providers via OpenRouter.
