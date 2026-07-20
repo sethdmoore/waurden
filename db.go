@@ -36,6 +36,13 @@ type DBRecord struct {
 	// Written only by storeAcknowledgement, never by upsertRecord, so a routine
 	// re-scan leaves it untouched.
 	AcknowledgedHash string
+	// AcknowledgedWarnHash is the pkgbuild_hash the user accepted at the lower-friction
+	// warn_on prompt (a flagged-but-not-blocked verdict). It is kept separate from
+	// AcknowledgedHash on purpose: a warn is accepted with a plain "y", so it must not
+	// later satisfy the high-friction block override (which can require typing "I accept
+	// the risk"). Honoured only while it equals the current pf.Hash; a PKGBUILD edit
+	// voids it. Written only by storeWarnAcknowledgement.
+	AcknowledgedWarnHash string
 	// LastScannedCommit is the git HEAD the package was last scanned at (when its
 	// dir is a git checkout). The next scan diffs this commit against the new HEAD
 	// so the LLM can focus on what actually changed. Advanced only on a successful
@@ -62,7 +69,8 @@ CREATE TABLE IF NOT EXISTS packages (
     prev_maintainer   TEXT,
     known_committers  TEXT,
     acknowledged_hash TEXT,
-    last_scanned_commit TEXT
+    last_scanned_commit TEXT,
+    acknowledged_warn_hash TEXT
 );`
 
 // scans is the append-only history that packages (a PRIMARY KEY(name) cache,
@@ -159,6 +167,7 @@ func migrateColumns(db *sql.DB) error {
 		`ALTER TABLE packages ADD COLUMN known_committers TEXT`,
 		`ALTER TABLE packages ADD COLUMN acknowledged_hash TEXT`,
 		`ALTER TABLE packages ADD COLUMN last_scanned_commit TEXT`,
+		`ALTER TABLE packages ADD COLUMN acknowledged_warn_hash TEXT`,
 	}
 	for _, stmt := range alters {
 		if _, err := db.Exec(stmt); err != nil {
@@ -177,14 +186,16 @@ func lookupRecord(db *sql.DB, name string) (*DBRecord, error) {
 		COALESCE(verdict,''), COALESCE(confidence,0), COALESCE(summary,''),
 		COALESCE(findings,''), COALESCE(source_analyzed,''), COALESCE(provider,''),
 		COALESCE(maintainer,''), COALESCE(known_committers,''),
-		COALESCE(acknowledged_hash,''), COALESCE(last_scanned_commit,'')
+		COALESCE(acknowledged_hash,''), COALESCE(last_scanned_commit,''),
+		COALESCE(acknowledged_warn_hash,'')
 		FROM packages WHERE name = ?`, name)
 
 	var r DBRecord
 	err := row.Scan(&r.Name, &r.LastScanned, &r.PKGBUILDHash, &r.PKGBUILDText,
 		&r.HelperFiles, &r.SourceHashes, &r.Diff, &r.Verdict, &r.Confidence,
 		&r.Summary, &r.Findings, &r.SourceAnalyzed, &r.Provider,
-		&r.Maintainer, &r.KnownCommitters, &r.AcknowledgedHash, &r.LastScannedCommit)
+		&r.Maintainer, &r.KnownCommitters, &r.AcknowledgedHash, &r.LastScannedCommit,
+		&r.AcknowledgedWarnHash)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -215,6 +226,19 @@ func forgetRecord(db *sql.DB, name string) (int64, error) {
 // if it does not, RowsAffected is 0 and the caller can surface that.
 func storeAcknowledgement(db *sql.DB, name, hash string) (int64, error) {
 	res, err := db.Exec(`UPDATE packages SET acknowledged_hash=? WHERE name = ?`, hash, name)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// storeWarnAcknowledgement pins the user's acceptance of a flagged-but-not-blocked
+// (warn_on) verdict for a specific PKGBUILD hash, so the low-friction warn prompt
+// isn't repeated on every makepkg phase / rebuild of the same content. Deliberately
+// distinct from storeAcknowledgement (a warn "y" must never satisfy a block override)
+// and, like it, kept out of upsertRecord so a routine re-scan leaves it untouched.
+func storeWarnAcknowledgement(db *sql.DB, name, hash string) (int64, error) {
+	res, err := db.Exec(`UPDATE packages SET acknowledged_warn_hash=? WHERE name = ?`, hash, name)
 	if err != nil {
 		return 0, err
 	}

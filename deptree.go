@@ -541,9 +541,29 @@ func runTreeGate(cfg Config, db *sql.DB, pf PackageFiles, root *AURNode, existin
 			if n.Verdict.ScanFailed || policyBlocks(cfg, n.Verdict) || !policyWarns(cfg, n.Verdict) {
 				continue
 			}
+			// Honour a prior hash-pinned warn acknowledgement so the same decision
+			// isn't re-prompted every makepkg phase / rebuild of this exact node.
+			if n.Name != "unknown" && n.Hash != "" {
+				if rec, _ := lookupRecord(db, n.Name); rec != nil &&
+					rec.AcknowledgedWarnHash != "" && rec.AcknowledgedWarnHash == n.Hash {
+					fmt.Fprintf(os.Stderr, "wAURden: %s @ %s warning previously accepted — allowing\n",
+						n.Name, short(n.Hash))
+					continue
+				}
+			}
 			if !confirmWarning(n.Name, n.Verdict) {
 				fmt.Fprintf(os.Stderr, "wAURden: build aborted — %s warning not accepted.\n", n.Name)
 				os.Exit(1)
+			}
+			// Remember the decision for this exact PKGBUILD hash (its own column, kept
+			// apart from the block ack — a warn "y" must not satisfy a block override).
+			if n.Name != "unknown" && n.Hash != "" {
+				if _, err := storeWarnAcknowledgement(db, n.Name, n.Hash); err != nil {
+					fmt.Fprintf(os.Stderr, "wAURden: could not remember your decision: %v\n", err)
+				} else {
+					fmt.Fprintf(os.Stderr, "wAURden: remembered — %s @ %s won't prompt again until the PKGBUILD changes\n",
+						n.Name, short(n.Hash))
+				}
 			}
 		}
 	}

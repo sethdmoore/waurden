@@ -1,4 +1,36 @@
-Latest session — **warning interface: force a typed decision instead of a passive Enter.** A user hit
+Latest session — **remember a "build anyway" warn decision + stop flagging printed setup docs.** A
+real `yay -S waydroid-nvidia-bin` (verdict `suspicious`, warn_on) prompted `Build anyway? [y/n]` on
+*every* makepkg phase; the user answered `y` twice, then a phase with no readable stdin hit EOF in
+`confirmWarning` → abort → the whole build failed. Fix (Part A): the warn path now persists the user's
+acceptance, hash-pinned, so they answer **once**. New `acknowledged_warn_hash` column (`db.go`: schema
++ additive `ALTER` in `migrateColumns` + `DBRecord.AcknowledgedWarnHash` + `lookupRecord` read + a
+dedicated `storeWarnAcknowledgement` writer kept out of `upsertRecord`). It is **deliberately separate
+from `acknowledged_hash`**: a warn is accepted with a plain `y`, so it must never satisfy the
+high-friction block override (which can require typing "I accept the risk"). The single-package warn
+branch (`main.go`) and per-node tree warn loop (`deptree.go`) now short-circuit when
+`AcknowledgedWarnHash == pf.Hash` (prints "warning previously accepted — allowing") and, on a fresh
+acceptance, call `storeWarnAcknowledgement` and print "remembered — … won't prompt again until the
+PKGBUILD changes". A PKGBUILD edit changes the hash → ack voids → re-prompt. Non-TTY warn paths stay
+advisory (unchanged).
+
+Part B — **reduce false sensitivity: printed instructions are documentation, not execution.** wAURden's
+own MEDIUM `systemctl enable` heuristic fired on the line `3. systemctl enable --now …` that lived
+*inside a `cat <<'EOF'` heredoc* in the package's `post_install` scriptlet — i.e. text shown to the
+user, biasing the LLM to `suspicious 0.80`. New `analyze.go` helpers (`displayedTextRanges` via
+`heredocOpenerRe`, `printerCommand`, `isDisplayedText`, `offsetInRanges`) make `scanPatterns` skip
+**advisory (medium/low)** matches that fall inside a *displayed* heredoc (opened by a printing command —
+cat/echo/printf/tee — with no file redirection) or on a single echo/printf line. The critical/high
+**block tier is never suppressed** (a `curl|sh` hidden in a printed heredoc still hard-blocks), and an
+*executed* `systemctl`/`useradd` (command position, not printed) is still flagged — so this narrows a
+false positive without weakening the wall. Also added a system-prompt paragraph telling the model that
+human-readable setup instructions (e.g. telling the user to run `systemctl enable …`) are guidance, not
+suspicious. New inert sample `tests/samples/scriptlet-doc/` (mirrors waydroid) + tests: `TestPrinterCommand`,
+`TestDisplayedTextRanges`, `TestDisplayedHeredocSuppressesAdvisory`, `TestExecutedSystemctlStillFlagged`,
+`TestCriticalNotSuppressedInHeredoc` (scriptlet_doc_test.go), `TestStoreWarnAcknowledgement` +
+`TestWarnAndBlockAcksAreIndependent` (db_test.go), and the sample added to the `TestHeuristicSamples`
+matrix. `go test -race ./...` green; build/vet/gofmt clean.
+
+Prior session — **warning interface: force a typed decision instead of a passive Enter.** A user hit
 a HIGH-severity finding (obfuscated Python exfiltrating `~/.ssh/*`) that the model rated only
 `suspicious`, so it landed on the non-blocked warn path — whose prompt was `Press Enter to continue
 (build will proceed)…`, i.e. a reflexive keypress waved it through (the user had to Ctrl-C). Fix: the

@@ -175,6 +175,67 @@ func TestStoreAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestStoreWarnAcknowledgement(t *testing.T) {
+	db := newTestDB(t)
+	// No row yet → 0 rows affected.
+	n, err := storeWarnAcknowledgement(db, "ghost", "wh1")
+	if err != nil {
+		t.Fatalf("storeWarnAcknowledgement(no row): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("warn ack on missing row affected %d rows, want 0", n)
+	}
+	// With a row present, the warn ack is stored and readable.
+	upsertRecord(db, sampleRecord("ghost"))
+	n, err = storeWarnAcknowledgement(db, "ghost", "wh2")
+	if err != nil || n != 1 {
+		t.Fatalf("storeWarnAcknowledgement = (%d,%v), want (1,nil)", n, err)
+	}
+	got, _ := lookupRecord(db, "ghost")
+	if got.AcknowledgedWarnHash != "wh2" {
+		t.Errorf("acknowledged_warn_hash = %q, want wh2", got.AcknowledgedWarnHash)
+	}
+}
+
+// TestWarnAndBlockAcksAreIndependent guards the security property that a plain-"y"
+// warn acceptance never leaks into the high-friction block acknowledgement column
+// (and vice versa): they are stored, read, and cleared separately.
+func TestWarnAndBlockAcksAreIndependent(t *testing.T) {
+	db := newTestDB(t)
+	upsertRecord(db, sampleRecord("dual"))
+
+	if _, err := storeWarnAcknowledgement(db, "dual", "warnhash"); err != nil {
+		t.Fatalf("storeWarnAcknowledgement: %v", err)
+	}
+	got, _ := lookupRecord(db, "dual")
+	if got.AcknowledgedWarnHash != "warnhash" {
+		t.Fatalf("warn ack = %q, want warnhash", got.AcknowledgedWarnHash)
+	}
+	if got.AcknowledgedHash != "" {
+		t.Errorf("warn ack must not populate the block ack column; got %q", got.AcknowledgedHash)
+	}
+
+	if _, err := storeAcknowledgement(db, "dual", "blockhash"); err != nil {
+		t.Fatalf("storeAcknowledgement: %v", err)
+	}
+	got, _ = lookupRecord(db, "dual")
+	if got.AcknowledgedHash != "blockhash" {
+		t.Errorf("block ack = %q, want blockhash", got.AcknowledgedHash)
+	}
+	if got.AcknowledgedWarnHash != "warnhash" {
+		t.Errorf("block ack clobbered the warn ack: %q", got.AcknowledgedWarnHash)
+	}
+
+	// A routine re-scan (upsertRecord) must leave both acks untouched.
+	if err := upsertRecord(db, sampleRecord("dual")); err != nil {
+		t.Fatalf("upsertRecord: %v", err)
+	}
+	got, _ = lookupRecord(db, "dual")
+	if got.AcknowledgedWarnHash != "warnhash" || got.AcknowledgedHash != "blockhash" {
+		t.Errorf("upsert clobbered an ack: warn=%q block=%q", got.AcknowledgedWarnHash, got.AcknowledgedHash)
+	}
+}
+
 func TestRecordScanAndRecentScans(t *testing.T) {
 	db := newTestDB(t)
 	// The scans FK references packages(name); upsert the parents first.

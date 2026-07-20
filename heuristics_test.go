@@ -43,6 +43,7 @@ func TestHeuristicSamples(t *testing.T) {
 	}{
 		{"benign", false},
 		{"benign-daemon", false}, // useradd/systemctl are advisory, never a hard block
+		{"scriptlet-doc", false}, // printed setup instructions are documentation, not actions
 		{"curlbash", true},
 		{"malicious", true},
 		{"promptinjection", true},

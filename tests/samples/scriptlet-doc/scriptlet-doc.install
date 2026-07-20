@@ -1,0 +1,14 @@
+post_install() {
+    cat <<'EOF'
+scriptlet-doc: next steps
+  1. example init                       (first-time setup, as usual)
+  2. systemctl enable --now example.service
+  3. systemctl --user enable --now example-helper.service   (as your user)
+
+Requires a working display server. See the README for details.
+EOF
+}
+
+post_upgrade() {
+    post_install
+}

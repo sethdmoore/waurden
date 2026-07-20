@@ -1,0 +1,20 @@
+# Inert sample: a package that ships a systemd service and, in its post_install
+# scriptlet, PRINTS setup instructions telling the user to enable it. The printed
+# "systemctl enable --now …" is documentation, not an action the package takes, so
+# it must not be flagged as suspicious (this mirrors the real waydroid-nvidia-bin).
+pkgname=scriptlet-doc
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Sample package that documents post-install setup steps"
+arch=('x86_64')
+url="https://example.invalid/scriptlet-doc"
+license=('MIT')
+depends=()
+install=scriptlet-doc.install
+source=("service.tar.gz::https://example.invalid/service.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    # Stage a systemd unit into the package dir — normal packaging.
+    install -Dm644 "$srcdir/example.service" "$pkgdir/usr/lib/systemd/system/example.service"
+}

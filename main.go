@@ -450,13 +450,33 @@ func runGateCmd(args []string) {
 			os.Exit(1)
 		}
 	} else if isTTY() {
-		// Flagged but not blocked (warn_on). Force an explicit typed decision rather
-		// than a passive Enter: a warning like "~/.ssh exfiltration" must not be
-		// dismissible by accidentally hitting return. confirmWarning re-prompts until
-		// the user makes an explicit y/n choice; a negative aborts the build.
-		if !confirmWarning(pf.Name, v) {
-			fmt.Fprintf(os.Stderr, "wAURden: build aborted — %s warning not accepted.\n", pf.Name)
-			os.Exit(1)
+		// Flagged but not blocked (warn_on). Honour a prior hash-pinned warn
+		// acknowledgement so a decision the user already made isn't re-prompted on
+		// every makepkg phase / rebuild of this exact PKGBUILD — the repeated prompt
+		// (and its abort when a later phase has no readable stdin) was the whole point
+		// of the complaint. A PKGBUILD edit changes the hash and voids the ack.
+		if pf.Name != "unknown" && existing != nil &&
+			existing.AcknowledgedWarnHash != "" && existing.AcknowledgedWarnHash == pf.Hash {
+			fmt.Fprintf(os.Stderr, "wAURden: %s @ %s warning previously accepted — allowing\n", pf.Name, short(pf.Hash))
+		} else {
+			// Force an explicit typed decision rather than a passive Enter: a warning
+			// like "~/.ssh exfiltration" must not be dismissible by accidentally
+			// hitting return. confirmWarning re-prompts until the user makes an
+			// explicit y/n choice; a negative aborts the build.
+			if !confirmWarning(pf.Name, v) {
+				fmt.Fprintf(os.Stderr, "wAURden: build aborted — %s warning not accepted.\n", pf.Name)
+				os.Exit(1)
+			}
+			// Remember the decision for this exact PKGBUILD hash so the user answers
+			// once, not once per makepkg phase. A warn is advisory and was accepted
+			// with a plain "y", so it is stored in its own column, never the block ack.
+			if pf.Name != "unknown" {
+				if _, err := storeWarnAcknowledgement(db, pf.Name, pf.Hash); err != nil {
+					fmt.Fprintf(os.Stderr, "wAURden: could not remember your decision: %v\n", err)
+				} else {
+					fmt.Fprintf(os.Stderr, "wAURden: remembered — %s @ %s won't prompt again until the PKGBUILD changes\n", pf.Name, short(pf.Hash))
+				}
+			}
 		}
 	}
 }
