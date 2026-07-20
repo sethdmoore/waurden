@@ -33,6 +33,22 @@ func renderTree(w io.Writer, nodes []*AURNode, prevLines int) int {
 	return len(nodes)
 }
 
+// visibleTreeNodes filters pruned official-repo leaves out of the render list: a
+// real dependency tree is mostly "repo" deps (a typical node has a dozen), and a
+// wall of them buries the AUR nodes that actually carry a verdict. Repo nodes are
+// still resolved and classified upstream (to prune the closure) — they're just not
+// drawn. Unresolvable "skipped" leaves are kept (rarer, and worth surfacing).
+func visibleTreeNodes(nodes []*AURNode) []*AURNode {
+	out := make([]*AURNode, 0, len(nodes))
+	for _, n := range nodes {
+		if n.Status == statusRepo {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // nodeRenderLine formats one tree row: indentation by depth, a branch marker, the
 // package name, and its status text. Used by both the animated TTY renderer and
 // the plain non-TTY per-node lines, so the content is identical either way.

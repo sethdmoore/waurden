@@ -450,37 +450,56 @@ func runTreeGate(cfg Config, db *sql.DB, pf PackageFiles, root *AURNode, existin
 	tty := isTTY()
 	treeColor = tty
 	nodes := flattenTree(root)
+	display := visibleTreeNodes(nodes) // repo leaves are pruned from the render
 
-	fmt.Fprintf(os.Stderr, "wAURden: scanning package tree for %s\n", root.Name)
-	fmt.Fprintf(os.Stderr, "  Found %d dependent AUR package(s)\n", countAURNodes(root))
+	// Dedup the tree render across makepkg phases. One AUR build fires this gate
+	// once per phase (source-fetch, dep-check, build, fakeroot package()), each an
+	// independent process that re-resolves and re-renders the identical tree — so
+	// without this the whole tree reprints four-plus times per package. If this exact
+	// root PKGBUILD was already gated within the quiet window, scan silently: every
+	// node is still scanned and the block/warn/ack/exit logic below still runs and
+	// prints, we just don't repaint the clean tree. Keyed on the root hash (like the
+	// single-package OK-line dedup) and read before any recordScan so it matches only
+	// a *prior* run, never this one.
+	render := true
+	if seen, _ := recentlyAnnounced(db, pf.Name, pf.Hash, cfg.GateQuietWindow); seen {
+		render = false
+	}
+
+	if render {
+		fmt.Fprintf(os.Stderr, "wAURden: scanning package tree for %s\n", root.Name)
+		fmt.Fprintf(os.Stderr, "  Found %d dependent AUR package(s)\n", countAURNodes(root))
+	}
 
 	prev := 0
-	if tty {
-		prev = renderTree(os.Stderr, nodes, prev)
+	if render && tty {
+		prev = renderTree(os.Stderr, display, prev)
 	}
 	for _, n := range nodes {
 		if n.Status != statusPending {
 			continue // repo / skipped / clone-error — nothing to scan
 		}
 		n.Status = statusScanning
-		if tty {
-			prev = renderTree(os.Stderr, nodes, prev)
+		if render && tty {
+			prev = renderTree(os.Stderr, display, prev)
 		}
 		scanNode(cfg, db, n, &pf, false)
-		if tty {
-			prev = renderTree(os.Stderr, nodes, prev)
-		} else {
+		if render && tty {
+			prev = renderTree(os.Stderr, display, prev)
+		} else if render {
 			fmt.Fprintln(os.Stderr, nodeRenderLine(n))
 		}
 	}
-	if tty {
-		renderTree(os.Stderr, nodes, prev)
+	if render && tty {
+		renderTree(os.Stderr, display, prev)
 	}
 
 	// Buffered per-node committer notes, printed once below the settled tree.
-	for _, n := range nodes {
-		for _, w := range n.Warnings {
-			fmt.Fprintln(os.Stderr, w)
+	if render {
+		for _, n := range nodes {
+			for _, w := range n.Warnings {
+				fmt.Fprintln(os.Stderr, w)
+			}
 		}
 	}
 
@@ -570,7 +589,7 @@ func runTreeGate(cfg Config, db *sql.DB, pf PackageFiles, root *AURNode, existin
 
 	// Clean (or accepted warn-level). Hold the render briefly so the block of results
 	// is readable before the helper's compile output scrolls it away.
-	if tty && cfg.TreePauseSeconds > 0 {
+	if render && tty && cfg.TreePauseSeconds > 0 {
 		time.Sleep(time.Duration(cfg.TreePauseSeconds) * time.Second)
 	}
 	os.Exit(0)

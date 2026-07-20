@@ -71,6 +71,36 @@ func TestDim(t *testing.T) {
 	treeColor = false // restore
 }
 
+func TestVisibleTreeNodes(t *testing.T) {
+	// A realistic flattened tree: an AUR root, a pile of repo leaves, one AUR
+	// child, and one unresolvable "skipped" leaf. Only repo leaves are dropped.
+	nodes := []*AURNode{
+		{Name: "app", Status: statusOK},
+		{Name: "cmake", Depth: 1, Status: statusRepo},
+		{Name: "glibc", Depth: 1, Status: statusRepo},
+		{Name: "libapp-git", Depth: 1, Status: statusOK},
+		{Name: "opengl-driver", Depth: 1, Status: statusSkipped},
+	}
+	got := visibleTreeNodes(nodes)
+	if len(got) != 3 {
+		t.Fatalf("visibleTreeNodes kept %d nodes, want 3", len(got))
+	}
+	for _, n := range got {
+		if n.Status == statusRepo {
+			t.Errorf("repo node %q leaked into the render list", n.Name)
+		}
+	}
+	// Order and the non-repo statuses are preserved.
+	if got[0].Name != "app" || got[1].Name != "libapp-git" || got[2].Name != "opengl-driver" {
+		t.Errorf("visibleTreeNodes order = [%s %s %s], want [app libapp-git opengl-driver]",
+			got[0].Name, got[1].Name, got[2].Name)
+	}
+	// Nothing to filter is a no-op that still returns a usable slice.
+	if len(visibleTreeNodes(nil)) != 0 {
+		t.Error("visibleTreeNodes(nil) should be empty")
+	}
+}
+
 func TestRenderTree_LineCountAndCursor(t *testing.T) {
 	nodes := []*AURNode{
 		{Name: "app", Status: statusOK, Verdict: Verdict{Verdict: "ok", Confidence: 1}},

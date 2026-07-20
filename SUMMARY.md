@@ -1,4 +1,21 @@
-Latest session — **`forget` verb split + `show --verbose` diffs.** The old `waurden forget` was a
+Latest session — **tree render: once per package, no repo leaves.** A real `yay -Syu` reprinted the
+whole dep-tree 4–5× per package (one makepkg.conf.d gate per phase — source/dep-check/build/fakeroot,
+each a separate process re-resolving + re-rendering) and each tree was mostly a wall of dimmed `repo:`
+leaves burying the AUR nodes. Two fixes, both display-only (resolution/classification unchanged).
+(1) **Dedup across phases:** `runTreeGate` (`deptree.go`) now reads the existing
+`recentlyAnnounced(db, pf.Name, pf.Hash, cfg.GateQuietWindow)` ledger (default 120s, keyed on the root
+hash) *before* any `recordScan`; on a hit it sets `render=false` and scans **silently** — every node is
+still scanned and the block/warn/ack/exit logic still runs and prints, only the clean tree paint (header,
+"Found N", animated/plain node lines, buffered committer notes, `tree_pause` hold) is suppressed. So the
+tree shows once, then subsequent phases are quiet — reusing the same knob that already dedups the
+single-package OK line. (2) **Hide repo deps:** new `visibleTreeNodes` (`treeview.go`) filters
+`statusRepo` leaves out of the render list (kept: AUR + unresolvable `skipped`); the scan loop still
+walks all nodes, only `renderTree` sees the filtered slice. Tests: `TestVisibleTreeNodes`
+(treeview_test.go); dedup reuses already-covered `recentlyAnnounced`. `go test -race ./...` green;
+vet/gofmt/build clean. Not driveable end-to-end here (tree path needs pacman/AUR/clones); single-package
+gate CLI unaffected and still passing.
+
+Prior session — **`forget` verb split + `show --verbose` diffs.** The old `waurden forget` was a
 misnomer: it only blanked `pkgbuild_hash` (a cache invalidation), never deleted anything. Renamed that
 non-destructive behavior to **`waurden recheck`** (`recheckRecord` in `db.go`, `runRecheck` in
 `main.go`) and repurposed **`waurden forget`** into a genuine delete — new `deleteRecord` removes the
