@@ -238,9 +238,11 @@ format. Same mechanism: one `UPDATE` in the step, bump the version. This is the
    `CREATE TABLE` in any throwaway test fixture.
 5. **Test the upgrade path**, not just a fresh DB (§6).
 6. Do **not** add a "delete your DB" note to any doc, commit message, or error
-   string. If a *data* reset is genuinely needed, point at `waurden forget
+   string. If a *data* reset is genuinely needed, point at `waurden recheck
    <pkg>` (blanks `pkgbuild_hash`, preserves committers + ack) or `scan --force`
-   — both already non-destructive.
+   — both non-destructive. (`waurden forget <pkg>` deletes that one package's row
+   + history on purpose; it is a scoped user action, not the DB-wipe reflex this
+   policy retires.)
 7. Generate the patch per the CLAUDE.md workflow (stage explicitly, no `.claude/`).
 
 ---
@@ -272,10 +274,12 @@ These existing references predate this policy and should be scrubbed when next
 touched (separate patch; noted here so they aren't forgotten):
 
 - `CLAUDE.md` §9 — "delete the row (or the DB) to force a clean re-scan" →
-  `waurden forget <pkg>`.
+  `waurden recheck <pkg>`.
 - `SUMMARY.md` — "delete the DB row/file to force a clean re-scan" (×2) and
-  "clear them once with `waurden forget`" (already correct in the last spot).
+  "clear them once with `waurden recheck`".
 
 Note these are **cache-poisoning / data** resets, not schema migrations — but the
 "just delete the file" reflex is exactly what this policy retires, so the wording
-should move to the non-destructive `forget` / `--force` path everywhere.
+should move to the non-destructive `recheck` / `--force` path everywhere. (The
+destructive `forget` is for deliberately discarding one package's history, not for
+unsticking a cache.)

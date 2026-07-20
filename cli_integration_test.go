@@ -154,7 +154,7 @@ func TestCLIGateBenignAndMalicious(t *testing.T) {
 	}
 }
 
-func TestCLIShowForgetRoundTrip(t *testing.T) {
+func TestCLIShowRecheckForgetRoundTrip(t *testing.T) {
 	home := staticConfigHome(t)
 	// Scan populates the DB.
 	runCLI(t, home, "", "scan", absSample(t, "benign"))
@@ -167,11 +167,36 @@ func TestCLIShowForgetRoundTrip(t *testing.T) {
 	if !strings.Contains(r.stdout, "Verdict:      OK") {
 		t.Errorf("show verdict = %q", r.stdout)
 	}
+	// Plain show does not print the diff block.
+	if strings.Contains(r.stdout, "Changes since previous scan") ||
+		strings.Contains(r.stdout, "No stored diff") {
+		t.Errorf("plain show leaked diff section: %q", r.stdout)
+	}
 
-	// forget clears the cached verdict.
+	// show --verbose surfaces the diff section (first scan → no stored diff).
+	r = runCLI(t, home, "", "show", "hello-world", "--verbose")
+	if r.code != 0 || !strings.Contains(r.stdout, "No stored diff") {
+		t.Errorf("show --verbose: code=%d out=%q", r.code, r.stdout)
+	}
+
+	// recheck invalidates the cached verdict but keeps the row.
+	r = runCLI(t, home, "", "recheck", "hello-world")
+	if r.code != 0 || !strings.Contains(r.stdout, "Invalidated cached verdict") {
+		t.Errorf("recheck: code=%d out=%q", r.code, r.stdout)
+	}
+	r = runCLI(t, home, "", "show", "hello-world")
+	if !strings.Contains(r.stdout, "Package:      hello-world") {
+		t.Errorf("row gone after recheck: %q", r.stdout)
+	}
+
+	// forget deletes the record entirely.
 	r = runCLI(t, home, "", "forget", "hello-world")
-	if r.code != 0 || !strings.Contains(r.stdout, "Cleared cached verdict") {
+	if r.code != 0 || !strings.Contains(r.stdout, "Deleted all records") {
 		t.Errorf("forget: code=%d out=%q", r.code, r.stdout)
+	}
+	r = runCLI(t, home, "", "show", "hello-world")
+	if !strings.Contains(r.stdout, "No record found") {
+		t.Errorf("show after forget = %q", r.stdout)
 	}
 
 	// show on a package never scanned → "No record found".

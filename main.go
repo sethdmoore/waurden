@@ -70,6 +70,8 @@ func main() {
 		runSummary(args)
 	case "tokens":
 		runTokens(args)
+	case "recheck":
+		runRecheck(args)
 	case "forget":
 		runForget(args)
 	case "allow":
@@ -96,6 +98,7 @@ Usage:
                              --force (alias --no-cache) ignores the cached verdict
   waurden gate [DIR]         scan + enforce policy; exit 1 if blocked
   waurden show <pkgname>     print stored DB record for a package
+                             --verbose   also print the stored PKGBUILD diff
   waurden summary            current verdict per package + recent blocks
                              --history   full append-only scan/block timeline
                              --targets   read pkgnames on stdin (pacman hook use)
@@ -103,7 +106,8 @@ Usage:
                              PKGBUILD hash (cleared when the PKGBUILD changes)
   waurden tokens             report LLM token usage: this run / today / week /
                              month / all time
-  waurden forget <pkgname>   drop the cached verdict so the next scan re-runs
+  waurden recheck <pkgname>  invalidate the cached verdict so the next scan re-runs
+  waurden forget <pkgname>   permanently delete a package's records (verdict + history)
   waurden install-hooks      install makepkg and pacman hooks (requires root)
   waurden uninstall-hooks    remove installed hooks (requires root)
   waurden version            print version`)
@@ -524,11 +528,21 @@ func confirmWarning(name string, v Verdict) bool {
 }
 
 func runShow(args []string) {
-	if len(args) == 0 {
+	verbose := false
+	var rest []string
+	for _, a := range args {
+		switch a {
+		case "--verbose", "-v":
+			verbose = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) == 0 {
 		fmt.Fprintln(os.Stderr, "wAURden: show requires a package name")
 		os.Exit(1)
 	}
-	pkgname := args[0]
+	pkgname := rest[0]
 
 	cfg, _, err := loadConfig()
 	if err != nil {
@@ -573,12 +587,61 @@ func runShow(args []string) {
 			}
 		}
 	}
+
+	// The stored PKGBUILD diff is only shown under --verbose: it can be long and
+	// is noise for the common "what's the verdict" lookup. For live git history
+	// `git log -p` in the package dir gives the same and more.
+	if verbose {
+		if rec.LastScannedCommit != "" {
+			fmt.Printf("\nLast Scanned Commit: %s\n", rec.LastScannedCommit)
+		}
+		if strings.TrimSpace(rec.Diff) != "" {
+			fmt.Printf("\nChanges since previous scan:\n%s\n", rec.Diff)
+		} else {
+			fmt.Printf("\nNo stored diff (first scan, or the PKGBUILD was unchanged).\n")
+		}
+	}
 }
 
-// runForget clears the cached verdict for a package so the next scan re-runs,
-// without wiping the row. It blanks pkgbuild_hash (forcing a cache miss) rather
-// than deleting the row, so committer history (known_committers) and any future
-// acknowledged_hash survive. To re-scan in place use `scan --force` instead.
+// runRecheck invalidates the cached verdict for a package so the next scan
+// re-runs, without wiping the row. It blanks pkgbuild_hash (forcing a cache
+// miss) rather than deleting the row, so committer history (known_committers)
+// and any acknowledged_hash survive. To re-scan in place use `scan --force`.
+func runRecheck(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "wAURden: recheck requires a package name")
+		os.Exit(1)
+	}
+	pkgname := args[0]
+
+	cfg, _, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: config error: %v\n", err)
+		os.Exit(1)
+	}
+
+	db, err := openDBFromConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	n, err := recheckRecord(db, pkgname)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: recheck error: %v\n", err)
+		os.Exit(1)
+	}
+	if n == 0 {
+		fmt.Printf("No record found for package: %s\n", pkgname)
+		return
+	}
+	fmt.Printf("Invalidated cached verdict for %s; the next scan will re-run.\n", pkgname)
+}
+
+// runForget permanently deletes a package's records — its scan history and its
+// current-state row — via deleteRecord. Unlike recheck this is destructive: the
+// verdict cache, committer baseline, and any acknowledgement are all removed.
 func runForget(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "wAURden: forget requires a package name")
@@ -599,7 +662,7 @@ func runForget(args []string) {
 	}
 	defer db.Close()
 
-	n, err := forgetRecord(db, pkgname)
+	n, err := deleteRecord(db, pkgname)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wAURden: forget error: %v\n", err)
 		os.Exit(1)
@@ -608,7 +671,7 @@ func runForget(args []string) {
 		fmt.Printf("No record found for package: %s\n", pkgname)
 		return
 	}
-	fmt.Printf("Cleared cached verdict for %s; the next scan will re-run.\n", pkgname)
+	fmt.Printf("Deleted all records for %s (verdict cache + scan history).\n", pkgname)
 }
 
 // runAllow records a hash-pinned acknowledgement for a package so a subsequent

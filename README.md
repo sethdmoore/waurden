@@ -134,8 +134,11 @@ waurden configure         # Interactive setup wizard (run this first)
 waurden scan [DIR]        # Scan a package dir, print report, store in DB
 waurden gate [DIR]        # Scan the package + its AUR dep tree; exit 1/2 to abort makepkg
 waurden show <pkgname>    # Show stored verdict for a package
+                          #   --verbose  also print the stored PKGBUILD diff
 waurden summary           # Table of all scanned packages with verdicts
 waurden tokens            # LLM token usage: this run / today / week / month / all time
+waurden recheck <pkgname> # Invalidate the cached verdict so the next scan re-runs
+waurden forget <pkgname>  # Permanently delete a package's records (verdict + history)
 waurden install-hooks     # Install makepkg + pacman hooks (requires root)
 waurden uninstall-hooks   # Remove hooks
 waurden version

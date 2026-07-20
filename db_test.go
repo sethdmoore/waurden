@@ -123,33 +123,71 @@ func TestUpsertOverwritesButPreservesAck(t *testing.T) {
 	}
 }
 
-func TestForgetRecord(t *testing.T) {
+func TestRecheckRecord(t *testing.T) {
 	db := newTestDB(t)
 	rec := sampleRecord("vim")
 	upsertRecord(db, rec)
 
-	n, err := forgetRecord(db, "vim")
+	n, err := recheckRecord(db, "vim")
 	if err != nil {
-		t.Fatalf("forgetRecord: %v", err)
+		t.Fatalf("recheckRecord: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("forgetRecord rows affected = %d, want 1", n)
+		t.Errorf("recheckRecord rows affected = %d, want 1", n)
 	}
 	got, _ := lookupRecord(db, "vim")
 	if got == nil {
-		t.Fatal("forgetRecord deleted the row; it should only blank the hash")
+		t.Fatal("recheckRecord deleted the row; it should only blank the hash")
 	}
 	if got.PKGBUILDHash != "" {
-		t.Errorf("pkgbuild_hash = %q, want blank after forget", got.PKGBUILDHash)
+		t.Errorf("pkgbuild_hash = %q, want blank after recheck", got.PKGBUILDHash)
 	}
 	// The rest of the row (committer history) must survive.
 	if got.KnownCommitters != rec.KnownCommitters {
-		t.Errorf("known_committers wiped by forget: %q", got.KnownCommitters)
+		t.Errorf("known_committers wiped by recheck: %q", got.KnownCommitters)
 	}
-	// Forgetting a missing package affects 0 rows, no error.
-	n, err = forgetRecord(db, "nope")
+	// Rechecking a missing package affects 0 rows, no error.
+	n, err = recheckRecord(db, "nope")
 	if err != nil || n != 0 {
-		t.Errorf("forgetRecord(missing) = (%d,%v), want (0,nil)", n, err)
+		t.Errorf("recheckRecord(missing) = (%d,%v), want (0,nil)", n, err)
+	}
+}
+
+func TestDeleteRecord(t *testing.T) {
+	db := newTestDB(t)
+	upsertRecord(db, sampleRecord("vim"))
+	// Give the package a scan-history row so we can prove it is removed too.
+	if err := recordScan(db, "vim", "abc123", "static", Verdict{Verdict: "ok"}, false); err != nil {
+		t.Fatalf("recordScan: %v", err)
+	}
+	// A second package must be left untouched.
+	upsertRecord(db, sampleRecord("emacs"))
+
+	n, err := deleteRecord(db, "vim")
+	if err != nil {
+		t.Fatalf("deleteRecord: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("deleteRecord rows affected = %d, want 1", n)
+	}
+	if got, _ := lookupRecord(db, "vim"); got != nil {
+		t.Errorf("packages row survived forget: %+v", got)
+	}
+	var scanCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM scans WHERE package = ?`, "vim").Scan(&scanCount); err != nil {
+		t.Fatalf("count scans: %v", err)
+	}
+	if scanCount != 0 {
+		t.Errorf("scans rows survived forget: %d", scanCount)
+	}
+	// The unrelated package is intact.
+	if got, _ := lookupRecord(db, "emacs"); got == nil {
+		t.Error("deleteRecord removed an unrelated package")
+	}
+	// Deleting a missing package affects 0 rows, no error.
+	n, err = deleteRecord(db, "nope")
+	if err != nil || n != 0 {
+		t.Errorf("deleteRecord(missing) = (%d,%v), want (0,nil)", n, err)
 	}
 }
 

@@ -205,17 +205,51 @@ func lookupRecord(db *sql.DB, name string) (*DBRecord, error) {
 	return &r, nil
 }
 
-// forgetRecord blanks pkgbuild_hash so the next analyze() misses the verdict
+// recheckRecord blanks pkgbuild_hash so the next analyze() misses the verdict
 // cache and re-scans, while leaving the rest of the row (notably
-// known_committers, and the future acknowledged_hash) intact. Returns the number
-// of rows affected (0 = no such package). See also scan --force, which re-scans
-// without mutating the DB first.
-func forgetRecord(db *sql.DB, name string) (int64, error) {
+// known_committers and acknowledged_hash) intact. Returns the number of rows
+// affected (0 = no such package). See also scan --force, which re-scans without
+// mutating the DB first, and deleteRecord, which wipes the row entirely.
+func recheckRecord(db *sql.DB, name string) (int64, error) {
 	res, err := db.Exec(`UPDATE packages SET pkgbuild_hash='' WHERE name = ?`, name)
 	if err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
+}
+
+// deleteRecord permanently removes a package's records: its scan history
+// (scans) and its current-state row (packages), in one transaction. Unlike
+// recheckRecord this is destructive and unrecoverable — the verdict cache,
+// committer baseline, and any acknowledgement are all gone. It exists for the
+// case where a package's stored history is wrong or no longer useful (e.g. a
+// misflagged PKGBUILD, or crufty history for a package that has since evolved).
+// The token_usage ledger is intentionally left alone: it is a global accounting
+// record backing `waurden tokens`, not per-package scan history, and rewriting
+// all-time totals to delete one package would be surprising. Returns the number
+// of packages rows removed (0 = no such package).
+func deleteRecord(db *sql.DB, name string) (int64, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM scans WHERE package = ?`, name); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`DELETE FROM packages WHERE name = ?`, name)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // storeAcknowledgement pins the user's acceptance of a specific PKGBUILD hash.

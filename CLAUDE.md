@@ -153,7 +153,9 @@ it to land a column change is a regression. Every schema change carries existing
 versioned migration runner. See **`MIGRATIONS.md`** for the design (`PRAGMA user_version`, append-only
 migration list, the v1 baseline that freezes today's `CREATE TABLE IF NOT EXISTS` + additive `ALTER`
 logic) and the per-change checklist. A *data* reset, when genuinely needed, routes through the
-non-destructive `waurden forget <pkg>` / `scan --force` paths, not file deletion.
+non-destructive `waurden recheck <pkg>` / `scan --force` paths, not file deletion. (`waurden forget
+<pkg>` also exists and DOES delete that one package's row + scan history — a deliberate, scoped
+user action for a misflagged/stale package, distinct from wiping the whole DB file.)
 
 ## 6. File layout
 
@@ -274,7 +276,7 @@ User-addable patterns via `heuristics.toml` (additive only — cannot override b
   a `verdictFromOnError` result is never cached (covers all `on_error` modes, including
   `allow`, whose fallback doesn't set `ScanFailed`). A failed scan is now re-attempted on
   every run and the gate stays fail-closed. *Migration note:* an already-poisoned DB row
-  from before this fix persists until the PKGBUILD hash changes — run `waurden forget <pkg>`
+  from before this fix persists until the PKGBUILD hash changes — run `waurden recheck <pkg>`
   (non-destructively blanks `pkgbuild_hash`, preserving committer history and any ack) to
   force a clean re-scan. Do not advise wiping the DB; see `MIGRATIONS.md`.
 
@@ -506,14 +508,21 @@ read. (Items 1–2 share that cache-hit code path — implement them together; i
   normal, overwriting only that package's row via the existing write path. This is the cleanest
   "invalidate without wiping" — one row, preserves `known_committers` and (future) `acknowledged_hash`.
   `gate` need not expose it (the makepkg hook never passes flags); `scan` is the real target.
-- **Optional: `waurden forget <pkgname>`** for clearing without re-scanning / scripting.
-  - **Do NOT implement as `DELETE FROM packages WHERE name=?`.** A row delete also wipes the
-    `known_committers` baseline (committer tracking loses history → re-warns everything) and, once
-    gate-exceptions land, `acknowledged_hash`.
-  - Implement as `UPDATE packages SET pkgbuild_hash='' WHERE name=?`: the next scan misses, re-scans,
-    and `upsertRecord` refreshes the verdict while committer history and any ack survive untouched.
+- **`waurden recheck <pkgname>`** (DONE) for clearing without re-scanning / scripting.
+  - Implemented as `UPDATE packages SET pkgbuild_hash='' WHERE name=?` (`recheckRecord`): the next
+    scan misses, re-scans, and `upsertRecord` refreshes the verdict while committer history and any
+    ack survive untouched. This is the non-destructive path — it never touches the `known_committers`
+    baseline or `acknowledged_hash`.
+  - Historical note: this behavior originally shipped under the name `forget`. That was a misnomer —
+    it forgot nothing — so it was renamed to `recheck`, and `forget` was repurposed (below).
+- **`waurden forget <pkgname>`** (DONE) is the deliberate destructive path: `deleteRecord` removes the
+  package's `packages` row and its `scans` history in one transaction. It is scoped to one package (not
+  a DB wipe) and intended for a misflagged or stale package whose crufty history is no longer useful.
+  It DOES discard the `known_committers` baseline and any acknowledgement for that package — that is the
+  point of the command; use `recheck`/`--force` when you want to keep them. `token_usage` is left intact
+  (a global accounting ledger, not per-package scan history).
 - Invalidating the verdict cache must NOT revoke an `acknowledged_hash` — independent user decisions;
-  keep `--force`/`forget` clear of the ack column.
+  keep `--force`/`recheck` clear of the ack column. (`forget` intentionally removes everything.)
 - Note: post-0005 (scan failures no longer cached), the remaining use for force-rescan is
   re-evaluating a *successful* verdict (model improved, second opinion) — not unsticking a failure.
 

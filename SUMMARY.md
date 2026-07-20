@@ -1,4 +1,18 @@
-Latest session — **remember a "build anyway" warn decision + stop flagging printed setup docs.** A
+Latest session — **`forget` verb split + `show --verbose` diffs.** The old `waurden forget` was a
+misnomer: it only blanked `pkgbuild_hash` (a cache invalidation), never deleted anything. Renamed that
+non-destructive behavior to **`waurden recheck`** (`recheckRecord` in `db.go`, `runRecheck` in
+`main.go`) and repurposed **`waurden forget`** into a genuine delete — new `deleteRecord` removes the
+package's `packages` row and its `scans` history in one transaction (leaving the global `token_usage`
+ledger intact), for a misflagged/stale package whose crufty history is no longer wanted. `runShow`
+gained a `--verbose`/`-v` flag that prints `last_scanned_commit` + the stored PKGBUILD `diff` (the
+column was already written/fed to the LLM but never surfaced); plain `show` stays terse. No new
+schema/migration. Tests: `TestRecheckRecord` + new `TestDeleteRecord` (asserts row+scans gone, sibling
+package + `token_usage` untouched) in `db_test.go`; CLI round-trip renamed to
+`TestCLIShowRecheckForgetRoundTrip` covering `show`, `show --verbose`, `recheck` (row survives),
+`forget` (row gone). Docs (README/CLAUDE.md/MIGRATIONS.md/SUMMARY.md) updated so the "non-destructive
+clear" advice points at `recheck`, not the now-destructive `forget`. `go test -race ./...` green.
+
+Prior session — **remember a "build anyway" warn decision + stop flagging printed setup docs.** A
 real `yay -S waydroid-nvidia-bin` (verdict `suspicious`, warn_on) prompted `Build anyway? [y/n]` on
 *every* makepkg phase; the user answered `y` twice, then a phase with no readable stdin hit EOF in
 `confirmWarning` → abort → the whole build failed. Fix (Part A): the warn path now persists the user's
@@ -137,9 +151,9 @@ now takes `force bool` and its cache-hit guard keys on provider/model as well as
 `existing.Provider == providerStr` (the same `"<provider>/<model>"` string `storeVerdict` writes), so
 switching models is a cache miss that re-scans and overwrites the row (no migration; `base_url` and
 prompt version intentionally not keyed). (2) `scan --force` (alias `--no-cache`) threads `force=true`
-to skip the cache read; `gate` always passes `false`. `waurden forget <pkgname>` blanks `pkgbuild_hash`
-via `forgetRecord` (`UPDATE … SET pkgbuild_hash=''`) instead of deleting, preserving `known_committers`
-and the future `acknowledged_hash`. (3) `waurden version` calls `versionString()`, reading
+to skip the cache read; `gate` always passes `false`. `waurden recheck <pkgname>` blanks `pkgbuild_hash`
+via `recheckRecord` (`UPDATE … SET pkgbuild_hash=''`) instead of deleting, preserving `known_committers`
+and `acknowledged_hash` (this non-destructive path was originally named `forget`). (3) `waurden version` calls `versionString()`, reading
 `vcs.revision`/`vcs.time`/`vcs.modified` from `debug.ReadBuildInfo()` →
 `wAURden 0.1.0 (b192e83, 2026-06-22, dirty)`, falling back to the bare release number when unstamped.
 Verified end-to-end with the static provider: a `WAURDEN_MODEL` change re-stored the row as
@@ -187,7 +201,7 @@ the next run even when the hash is unchanged (a cached `ok` can be re-flagged). 
 still falls through to the cache, so legitimate LLM-verdict cache hits are preserved (no extra LLM calls).
 Verified: heuristic block overrides a poisoned cached `ok`; clean heuristics still serve a cached verdict;
 OK one-liner + scanning line appear on the right paths. **Existing poisoned rows are not retroactively
-healed** — clear them once with `waurden forget <pkg>` (or let the PKGBUILD hash change).
+healed** — clear them once with `waurden recheck <pkg>` (or let the PKGBUILD hash change).
 
 New policy doc `MIGRATIONS.md` (plan-only, no code yet): **never wipe the user's DB for a schema
 change.** Designs a `PRAGMA user_version` migration runner — append-only ordered `[]migration`, each
@@ -197,8 +211,8 @@ file and an already-migrated `v0` deployed file converge to the same shape; from
 versioned steps (no `IF NOT EXISTS`, no duplicate-swallowing). Covers additive columns, the SQLite
 table-rebuild dance for non-additive changes/backfills, indexes, the per-change checklist, and
 upgrade-path testing (old file + new binary, not just fresh DB). §7 flags the lingering "delete the
-DB/row" advice in CLAUDE.md §9 and this file (above) for a later scrub toward `waurden forget` /
-`scan --force` — both already non-destructive. Implementing the runner in `db.go` is a deferred
+DB/row" advice in CLAUDE.md §9 and this file (above) for a later scrub toward `waurden recheck` /
+`scan --force` — both non-destructive. Implementing the runner in `db.go` is a deferred
 follow-up (scope was plan-only).
 
 Latest changeset (DONE — CLAUDE.md §10 "Gate output: clean per-package lines + end-of-run recap"):
