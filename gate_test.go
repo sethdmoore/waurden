@@ -202,17 +202,24 @@ func TestConfirmWarning(t *testing.T) {
 		input string
 		want  bool
 	}{
-		// High/critical: a bare Enter or plain "y" must NOT proceed — only the phrase.
-		{"high: bare enter declines", high, "\n", false},
-		{"high: y declines", high, "y\n", false},
+		// High/critical: only the exact phrase proceeds; "n" aborts explicitly.
 		{"high: phrase accepts", high, "I accept the risk\n", true},
 		{"high: phrase case-insensitive", high, "i ACCEPT the RISK\n", true},
 		{"high: phrase trimmed", high, "  I accept the risk  \n", true},
-		// Low/medium: plain y/N — bare Enter declines, y proceeds.
-		{"low: bare enter declines", low, "\n", false},
-		{"low: n declines", low, "n\n", false},
+		{"high: explicit n aborts", high, "n\n", false},
+		{"high: no aborts", high, "no\n", false},
+		// A bare Enter or plain "y" is not a valid answer at the high tier: re-ask,
+		// then honor the next line (phrase → proceed; run out of input → abort).
+		{"high: bare enter re-asks then phrase", high, "\nI accept the risk\n", true},
+		{"high: y re-asks then n aborts", high, "y\nn\n", false},
+		{"high: bare enter then EOF aborts", high, "\n", false},
+		// Low/medium: plain y/n, no default — re-prompt until an explicit choice.
 		{"low: y accepts", low, "y\n", true},
 		{"low: yes accepts", low, "yes\n", true},
+		{"low: n declines", low, "n\n", false},
+		{"low: garbage re-asks then accepts", low, "maybe\ny\n", true},
+		{"low: garbage re-asks then declines", low, "huh\nn\n", false},
+		{"low: bare enter then EOF aborts", low, "\n", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

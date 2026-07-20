@@ -4,9 +4,11 @@ a HIGH-severity finding (obfuscated Python exfiltrating `~/.ssh/*`) that the mod
 (build will proceed)…`, i.e. a reflexive keypress waved it through (the user had to Ctrl-C). Fix: the
 single-package gate's warn branch (`main.go`) and the tree gate's warn nodes (`deptree.go`) now call a
 new `confirmWarning(name, v)` that **tiers friction by the highest finding severity** — high/critical
-requires the exact phrase `I accept the risk`; low/medium is a plain `[y/N]` where only `y`/`yes`
-proceeds. A bare Enter (or any non-affirmative answer) now **aborts the build** (exit 1) instead of
-allowing it. Non-TTY/hook paths are unchanged (warn_on stays advisory there). New helpers:
+requires the exact phrase `I accept the risk` (or `n` to abort); low/medium is a plain `y/n` question.
+It **re-prompts until the user chooses explicitly**: a stray Enter or typo just asks again rather than
+deciding for them (no default). It returns only on an explicit affirmative (proceed) or an explicit
+negative / EOF (abort → exit 1, so it can't loop forever). Non-TTY/hook paths are unchanged (warn_on
+stays advisory there). New helpers:
 `highestSeverity` (`heuristics.go`, next to `severityRank`) and `policyWarns` (`gate.go`, mirrors
 `policyBlocks`). Tests: `TestConfirmWarning` (phrase vs y/N tiering, bare-Enter declines both),
 `TestHighestSeverity`, `TestPolicyWarns` (`gate_test.go`, reusing summary_test's `withStdin`).

@@ -452,9 +452,8 @@ func runGateCmd(args []string) {
 	} else if isTTY() {
 		// Flagged but not blocked (warn_on). Force an explicit typed decision rather
 		// than a passive Enter: a warning like "~/.ssh exfiltration" must not be
-		// dismissible by accidentally hitting return. confirmWarning tiers the
-		// friction by the highest finding severity and returns false on anything but
-		// an affirmative answer (bare Enter included) — declining aborts the build.
+		// dismissible by accidentally hitting return. confirmWarning re-prompts until
+		// the user makes an explicit y/n choice; a negative aborts the build.
 		if !confirmWarning(pf.Name, v) {
 			fmt.Fprintf(os.Stderr, "wAURden: build aborted — %s warning not accepted.\n", pf.Name)
 			os.Exit(1)
@@ -463,23 +462,45 @@ func runGateCmd(args []string) {
 }
 
 // confirmWarning forces an explicit, typed decision on a flagged-but-not-blocked
-// (warn_on) verdict at an interactive TTY. A passive Enter must never proceed — the
-// point is that a security warning demands an active choice, not a reflexive keypress.
-// Friction is tiered by the highest finding severity: a high/critical finding requires
-// the exact phrase "I accept the risk"; anything lower is a plain [y/N] where only
-// "y"/"yes" proceeds. Returns true only on an affirmative answer.
+// (warn_on) verdict at an interactive TTY. It never accepts a passive keypress and
+// never assumes a default — it re-prompts until the user chooses explicitly, so a
+// stray Enter or typo just asks again rather than deciding for them. Friction is
+// tiered by the highest finding severity: a high/critical finding requires the exact
+// phrase "I accept the risk" to proceed (or "n" to abort); anything lower is a plain
+// y/n question. Returns true only on an explicit affirmative; false on an explicit
+// negative or on EOF/closed stdin (so it can never loop forever).
 func confirmWarning(name string, v Verdict) bool {
 	reader := bufio.NewReader(os.Stdin)
-	if severityRank(highestSeverity(v)) >= 3 { // high or critical
+	highRisk := severityRank(highestSeverity(v)) >= 3 // high or critical
+	if highRisk {
 		fmt.Fprintf(os.Stderr, "\nwAURden: %s raised a HIGH-severity warning (see above).\n", name)
-		fmt.Fprintf(os.Stderr, "To build anyway, type exactly: I accept the risk\n> ")
-		line, _ := reader.ReadString('\n')
-		return strings.EqualFold(strings.TrimSpace(line), "i accept the risk")
+		fmt.Fprintf(os.Stderr, "To build anyway, type exactly: I accept the risk  (or 'n' to abort)\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "\nwAURden: %s raised a warning (see above).\n", name)
 	}
-	fmt.Fprintf(os.Stderr, "\nwAURden: %s raised a warning (see above). Build anyway? [y/N]: ", name)
-	line, _ := reader.ReadString('\n')
-	ans := strings.ToLower(strings.TrimSpace(line))
-	return ans == "y" || ans == "yes"
+	for {
+		if highRisk {
+			fmt.Fprintf(os.Stderr, "> ")
+		} else {
+			fmt.Fprintf(os.Stderr, "Build anyway? [y/n]: ")
+		}
+		line, err := reader.ReadString('\n')
+		ans := strings.TrimSpace(line)
+		low := strings.ToLower(ans)
+		switch {
+		case highRisk && strings.EqualFold(ans, "i accept the risk"):
+			return true
+		case !highRisk && (low == "y" || low == "yes"):
+			return true
+		case low == "n" || low == "no":
+			return false
+		}
+		if err != nil {
+			// stdin closed / EOF — nothing left to re-ask with; fail safe (abort).
+			return false
+		}
+		fmt.Fprintln(os.Stderr, "wAURden: please answer explicitly.")
+	}
 }
 
 func runShow(args []string) {
