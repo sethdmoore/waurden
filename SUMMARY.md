@@ -1,4 +1,18 @@
-Latest session (DONE) — **gate OK-line dedup within a quiet window.** A real `yay -S
+Latest session — **warning interface: force a typed decision instead of a passive Enter.** A user hit
+a HIGH-severity finding (obfuscated Python exfiltrating `~/.ssh/*`) that the model rated only
+`suspicious`, so it landed on the non-blocked warn path — whose prompt was `Press Enter to continue
+(build will proceed)…`, i.e. a reflexive keypress waved it through (the user had to Ctrl-C). Fix: the
+single-package gate's warn branch (`main.go`) and the tree gate's warn nodes (`deptree.go`) now call a
+new `confirmWarning(name, v)` that **tiers friction by the highest finding severity** — high/critical
+requires the exact phrase `I accept the risk`; low/medium is a plain `[y/N]` where only `y`/`yes`
+proceeds. A bare Enter (or any non-affirmative answer) now **aborts the build** (exit 1) instead of
+allowing it. Non-TTY/hook paths are unchanged (warn_on stays advisory there). New helpers:
+`highestSeverity` (`heuristics.go`, next to `severityRank`) and `policyWarns` (`gate.go`, mirrors
+`policyBlocks`). Tests: `TestConfirmWarning` (phrase vs y/N tiering, bare-Enter declines both),
+`TestHighestSeverity`, `TestPolicyWarns` (`gate_test.go`, reusing summary_test's `withStdin`).
+`go test ./...` + `-race` on the new tests green.
+
+Prior session (DONE) — **gate OK-line dedup within a quiet window.** A real `yay -S
 plex-media-server-plexpass` printed the same `plex… — OK (1.00) … (cached)` line four times: one
 AUR build fires the makepkg.conf.d gate once per makepkg phase (source-fetch, dep-check, build,
 fakeroot `package()`), each an independent process re-sourcing the hook, so the clean line repeats.

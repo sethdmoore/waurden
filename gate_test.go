@@ -146,3 +146,83 @@ func TestRunGateSuspiciousWarns(t *testing.T) {
 		t.Errorf("WARNING should mention the suspicious verdict; got:\n%s", out)
 	}
 }
+
+func TestPolicyWarns(t *testing.T) {
+	cases := []struct {
+		name    string
+		warnOn  []string
+		verdict string
+		want    bool
+	}{
+		{"suspicious warns", []string{"suspicious"}, "suspicious", true},
+		{"case-insensitive", []string{"suspicious"}, "SUSPICIOUS", true},
+		{"ok not in set", []string{"suspicious"}, "ok", false},
+		{"malicious not in warn set", []string{"suspicious"}, "malicious", false},
+		{"empty warn_on never warns", nil, "suspicious", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{WarnOn: c.warnOn}
+			if got := policyWarns(cfg, Verdict{Verdict: c.verdict}); got != c.want {
+				t.Errorf("policyWarns(warn_on=%v, verdict=%q) = %v, want %v",
+					c.warnOn, c.verdict, got, c.want)
+			}
+		})
+	}
+}
+
+func TestHighestSeverity(t *testing.T) {
+	cases := []struct {
+		name     string
+		findings []Finding
+		want     string
+	}{
+		{"none", nil, ""},
+		{"single low", []Finding{{Severity: "low"}}, "low"},
+		{"picks high over medium", []Finding{{Severity: "medium"}, {Severity: "high"}, {Severity: "low"}}, "high"},
+		{"critical wins", []Finding{{Severity: "high"}, {Severity: "critical"}}, "critical"},
+		{"unknown treated as info", []Finding{{Severity: "bogus"}}, "bogus"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := highestSeverity(Verdict{Findings: c.findings}); got != c.want {
+				t.Errorf("highestSeverity(%v) = %q, want %q", c.findings, got, c.want)
+			}
+		})
+	}
+}
+
+func TestConfirmWarning(t *testing.T) {
+	high := Verdict{Verdict: "suspicious", Findings: []Finding{{Severity: "high", Detail: "exfil ~/.ssh"}}}
+	low := Verdict{Verdict: "suspicious", Findings: []Finding{{Severity: "low"}}}
+
+	cases := []struct {
+		name  string
+		v     Verdict
+		input string
+		want  bool
+	}{
+		// High/critical: a bare Enter or plain "y" must NOT proceed — only the phrase.
+		{"high: bare enter declines", high, "\n", false},
+		{"high: y declines", high, "y\n", false},
+		{"high: phrase accepts", high, "I accept the risk\n", true},
+		{"high: phrase case-insensitive", high, "i ACCEPT the RISK\n", true},
+		{"high: phrase trimmed", high, "  I accept the risk  \n", true},
+		// Low/medium: plain y/N — bare Enter declines, y proceeds.
+		{"low: bare enter declines", low, "\n", false},
+		{"low: n declines", low, "n\n", false},
+		{"low: y accepts", low, "y\n", true},
+		{"low: yes accepts", low, "yes\n", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var got bool
+			withStdin(t, c.input, func() {
+				captureStderr(t, func() { got = confirmWarning("pkg", c.v) })
+			})
+			if got != c.want {
+				t.Errorf("confirmWarning(input=%q) = %v, want %v", c.input, got, c.want)
+			}
+		})
+	}
+}

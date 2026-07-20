@@ -51,6 +51,18 @@ func severityRank(s string) int {
 	}
 }
 
+// highestSeverity returns the severity string of the most severe finding in v, or
+// "" when v has no findings. Used to tier interactive warning friction.
+func highestSeverity(v Verdict) string {
+	best, rank := "", -1
+	for _, f := range v.Findings {
+		if r := severityRank(f.Severity); r > rank {
+			rank, best = r, f.Severity
+		}
+	}
+	return best
+}
+
 // builtinPatterns are always active regardless of external files.
 //
 // Severity drives the tier (see severityRank): critical/high blocks the build

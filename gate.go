@@ -38,6 +38,17 @@ func policyBlocks(cfg Config, v Verdict) bool {
 	return false
 }
 
+// policyWarns reports whether a verdict matches the configured warn_on set — a
+// flagged-but-not-blocked verdict the user should be forced to acknowledge.
+func policyWarns(cfg Config, v Verdict) bool {
+	for _, w := range cfg.WarnOn {
+		if strings.EqualFold(v.Verdict, w) {
+			return true
+		}
+	}
+	return false
+}
+
 func isTTY() bool {
 	fi, err := os.Stdin.Stat()
 	if err != nil {

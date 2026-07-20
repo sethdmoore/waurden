@@ -531,7 +531,23 @@ func runTreeGate(cfg Config, db *sql.DB, pf PackageFiles, root *AURNode, existin
 		os.Exit(treeExitCode(blocked))
 	}
 
-	// Clean (or only warn-level). Hold the render briefly so the block of results
+	// Flagged-but-not-blocked (warn_on) nodes: force an explicit typed decision per
+	// node at an interactive TTY, mirroring the single-package gate. A passive Enter
+	// must not wave through a warning like "~/.ssh exfiltration". Declining any one
+	// aborts the whole build (its siblings shouldn't keep compiling).
+	if tty {
+		for _, n := range nodes {
+			if n.Verdict.ScanFailed || policyBlocks(cfg, n.Verdict) || !policyWarns(cfg, n.Verdict) {
+				continue
+			}
+			if !confirmWarning(n.Name, n.Verdict) {
+				fmt.Fprintf(os.Stderr, "wAURden: build aborted — %s warning not accepted.\n", n.Name)
+				os.Exit(1)
+			}
+		}
+	}
+
+	// Clean (or accepted warn-level). Hold the render briefly so the block of results
 	// is readable before the helper's compile output scrolls it away.
 	if tty && cfg.TreePauseSeconds > 0 {
 		time.Sleep(time.Duration(cfg.TreePauseSeconds) * time.Second)

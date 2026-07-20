@@ -450,10 +450,36 @@ func runGateCmd(args []string) {
 			os.Exit(1)
 		}
 	} else if isTTY() {
-		// Suspicious but not blocked: pause so the warning doesn't scroll away.
-		fmt.Fprintf(os.Stderr, "\nPress Enter to continue (build will proceed)...")
-		bufio.NewReader(os.Stdin).ReadString('\n')
+		// Flagged but not blocked (warn_on). Force an explicit typed decision rather
+		// than a passive Enter: a warning like "~/.ssh exfiltration" must not be
+		// dismissible by accidentally hitting return. confirmWarning tiers the
+		// friction by the highest finding severity and returns false on anything but
+		// an affirmative answer (bare Enter included) — declining aborts the build.
+		if !confirmWarning(pf.Name, v) {
+			fmt.Fprintf(os.Stderr, "wAURden: build aborted — %s warning not accepted.\n", pf.Name)
+			os.Exit(1)
+		}
 	}
+}
+
+// confirmWarning forces an explicit, typed decision on a flagged-but-not-blocked
+// (warn_on) verdict at an interactive TTY. A passive Enter must never proceed — the
+// point is that a security warning demands an active choice, not a reflexive keypress.
+// Friction is tiered by the highest finding severity: a high/critical finding requires
+// the exact phrase "I accept the risk"; anything lower is a plain [y/N] where only
+// "y"/"yes" proceeds. Returns true only on an affirmative answer.
+func confirmWarning(name string, v Verdict) bool {
+	reader := bufio.NewReader(os.Stdin)
+	if severityRank(highestSeverity(v)) >= 3 { // high or critical
+		fmt.Fprintf(os.Stderr, "\nwAURden: %s raised a HIGH-severity warning (see above).\n", name)
+		fmt.Fprintf(os.Stderr, "To build anyway, type exactly: I accept the risk\n> ")
+		line, _ := reader.ReadString('\n')
+		return strings.EqualFold(strings.TrimSpace(line), "i accept the risk")
+	}
+	fmt.Fprintf(os.Stderr, "\nwAURden: %s raised a warning (see above). Build anyway? [y/N]: ", name)
+	line, _ := reader.ReadString('\n')
+	ans := strings.ToLower(strings.TrimSpace(line))
+	return ans == "y" || ans == "yes"
 }
 
 func runShow(args []string) {
