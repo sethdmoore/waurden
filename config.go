@@ -31,6 +31,14 @@ type Config struct {
 	// gate returns, so the block of results is readable before the helper's build
 	// output scrolls it away. 0 = no pause.
 	TreePauseSeconds int `toml:"tree_pause_seconds" envconfig:"TREE_PAUSE_SECONDS"`
+	// GateQuietWindow suppresses the repeated "<pkg> — OK" line when the same
+	// (package, pkgbuild_hash) was already announced this many seconds ago. One AUR
+	// build fires the makepkg.conf.d gate once per makepkg phase (fetch, dep-check,
+	// build, fakeroot package()), so a single install prints the same clean line
+	// several times; this collapses that flood to one line without weakening the
+	// gate (every phase still runs and still blocks). Only the clean OK line is
+	// deduped — warnings and blocks always print. 0 = never dedup (print every time).
+	GateQuietWindow int `toml:"gate_quiet_window_seconds" envconfig:"GATE_QUIET_WINDOW_SECONDS"`
 	// CloneDir is where wAURden keeps its own inert AUR clones (never built), used
 	// to discover/pre-scan/diff dependency PKGBUILDs. Default ~/.cache/waurden/aur.
 	CloneDir    string   `toml:"clone_dir"       envconfig:"CLONE_DIR"`
@@ -51,6 +59,7 @@ func loadConfig() (Config, bool, error) {
 		DBBusyTimeout:    7,
 		TreeScan:         true,
 		TreePauseSeconds: 1,
+		GateQuietWindow:  120,
 		BlockOn:          []string{"malicious"},
 		WarnOn:           []string{"suspicious"},
 		OnError:          "warn",

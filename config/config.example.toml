@@ -62,6 +62,15 @@ timeout_seconds = 60
 # away (TTY only). 0 = no pause.
 # tree_pause_seconds = 1
 
+# One AUR build fires the makepkg.conf.d gate once per makepkg phase (source
+# fetch, dependency check, build, fakeroot package()), so a single install prints
+# the same "<pkg> — OK" line several times. Within this many seconds of a prior
+# announcement of the same package + PKGBUILD hash, the clean OK line is
+# suppressed (the gate still runs and still blocks — only the duplicate line is
+# hidden). A PKGBUILD change resets the hash and always re-announces. 0 = never
+# dedup (print on every phase).
+# gate_quiet_window_seconds = 120
+
 # Where wAURden keeps its own inert AUR clones (never built — used only to
 # discover, pre-scan, and diff dependency PKGBUILDs). Default ~/.cache/waurden/aur.
 # clone_dir = "~/.cache/waurden/aur"

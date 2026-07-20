@@ -254,6 +254,33 @@ func recordScan(db *sql.DB, name, hash, provider string, v Verdict, blocked bool
 	return err
 }
 
+// recentlyAnnounced reports whether a scan for this exact (name, pkgbuild_hash)
+// was already recorded within windowSeconds of now. It is the dedup ledger for
+// the gate's clean "<pkg> — OK" line: one AUR build fires the makepkg hook once
+// per makepkg phase, so the same hash is gated several times in quick succession;
+// this lets the caller print the OK line once and stay quiet for the rest of the
+// window. It reads the append-only scans table and MUST be consulted *before* the
+// current scan's recordScan insert, or it would match the row just written.
+// windowSeconds <= 0 disables dedup (returns false). Keyed on hash, not just name,
+// so a PKGBUILD change (new hash) always re-announces. Non-fatal for callers.
+func recentlyAnnounced(db *sql.DB, name, hash string, windowSeconds int) (bool, error) {
+	if windowSeconds <= 0 || hash == "" {
+		return false, nil
+	}
+	threshold := time.Now().UTC().Add(-time.Duration(windowSeconds) * time.Second).Format(time.RFC3339)
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM scans
+		WHERE package=? AND pkgbuild_hash=? AND scanned_at >= ?
+		LIMIT 1`, name, hash, threshold).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // recentScans returns scan events newest-first, optionally only those policy
 // blocked. limit <= 0 means no limit.
 func recentScans(db *sql.DB, onlyBlocked bool, limit int) ([]ScanEvent, error) {

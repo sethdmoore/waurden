@@ -364,6 +364,17 @@ func runGateCmd(args []string) {
 		os.Exit(0)
 	}
 
+	// Was this exact (package, hash) already announced in the quiet window? One AUR
+	// build fires this gate once per makepkg phase, so the clean OK line would print
+	// several times for one install. Check *before* recordScan writes the current
+	// row, or it would match itself. Non-fatal: on a query error we fall back to
+	// printing (visible-but-noisy beats silent). This only gates the OK line below;
+	// the gate itself (record, exit codes, blocks) is unaffected.
+	quiet := false
+	if seen, qerr := recentlyAnnounced(db, pf.Name, pf.Hash, cfg.GateQuietWindow); qerr == nil {
+		quiet = seen
+	}
+
 	// Append this scan to the append-only history before any exit, so a block
 	// that scrolls past in the build flood stays durably reviewable via
 	// `waurden summary --history`. blocked here is the policy decision (verdict
@@ -378,8 +389,12 @@ func runGateCmd(args []string) {
 	// The provider/model is dropped from this line (it is identical for every
 	// concurrent gate process and is stated once in the `summary` recap); the
 	// info summary is appended so the line carries something package-specific.
+	// Suppressed when a prior phase already announced this exact version within
+	// GateQuietWindow — the gate still ran and still exits 0, just silently.
 	if v.Verdict == "ok" && !blocked {
-		fmt.Fprintf(os.Stderr, "wAURden: %s — OK (%.2f) %s%s\n", pf.Name, v.Confidence, truncate(v.Summary), cachedTag(v))
+		if !quiet {
+			fmt.Fprintf(os.Stderr, "wAURden: %s — OK (%.2f) %s%s\n", pf.Name, v.Confidence, truncate(v.Summary), cachedTag(v))
+		}
 		os.Exit(0)
 	}
 

@@ -46,6 +46,9 @@ func TestLoadConfig_TreeDefaults(t *testing.T) {
 	if cfg.TreePauseSeconds != 1 {
 		t.Errorf("TreePauseSeconds default = %d, want 1", cfg.TreePauseSeconds)
 	}
+	if cfg.GateQuietWindow != 120 {
+		t.Errorf("GateQuietWindow default = %d, want 120", cfg.GateQuietWindow)
+	}
 	wantClone := filepath.Join(home, ".cache", "waurden", "aur")
 	if cfg.CloneDir != wantClone {
 		t.Errorf("CloneDir default = %q, want %q", cfg.CloneDir, wantClone)
@@ -82,6 +85,32 @@ func TestLoadConfig_TreeScanEnvOverride(t *testing.T) {
 	}
 	if cfg.TreeScan {
 		t.Error("WAURDEN_TREE_SCAN=false did not override the default")
+	}
+}
+
+func TestLoadConfig_GateQuietWindow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	clearEnv(t)
+
+	// File value is honoured (0 = disable dedup).
+	writeUserConfig(t, home, "provider = \"static\"\ngate_quiet_window_seconds = 0\n")
+	cfg, found, err := loadConfig()
+	if err != nil || !found {
+		t.Fatalf("loadConfig: found=%v err=%v", found, err)
+	}
+	if cfg.GateQuietWindow != 0 {
+		t.Errorf("gate_quiet_window_seconds = %d, want 0", cfg.GateQuietWindow)
+	}
+
+	// Env overrides the file.
+	t.Setenv("WAURDEN_GATE_QUIET_WINDOW_SECONDS", "300")
+	cfg, _, err = loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig env: %v", err)
+	}
+	if cfg.GateQuietWindow != 300 {
+		t.Errorf("WAURDEN_GATE_QUIET_WINDOW_SECONDS=300 → %d, want 300", cfg.GateQuietWindow)
 	}
 }
 

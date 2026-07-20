@@ -1,4 +1,20 @@
-Latest session — **obfuscated-payload hardening** (real bypass reported by the user: an inline
+Latest session (DONE) — **gate OK-line dedup within a quiet window.** A real `yay -S
+plex-media-server-plexpass` printed the same `plex… — OK (1.00) … (cached)` line four times: one
+AUR build fires the makepkg.conf.d gate once per makepkg phase (source-fetch, dep-check, build,
+fakeroot `package()`), each an independent process re-sourcing the hook, so the clean line repeats.
+Not a security duplicate (all cache hits) — a visibility problem. Fix: new `GateQuietWindow` config
+knob (`gate_quiet_window_seconds`, env `WAURDEN_GATE_QUIET_WINDOW_SECONDS`, default **120**, 0 =
+disable) + `recentlyAnnounced(db, name, hash, windowSeconds)` in db.go, which checks the append-only
+`scans` table for a prior scan of the same **(package, pkgbuild_hash)** within the window. In
+`runGateCmd` the check runs *before* `recordScan` writes the current row (else it self-matches) and
+suppresses **only** the clean `— OK` line — the gate still runs, still records, still exits 0/1/2 and
+still prints warnings/blocks every phase. Keyed on hash so a PKGBUILD edit always re-announces. Scoped
+to the single-package fast path (`main.go`); the tree-gate render (intentionally held) is unchanged.
+Tests: `TestRecentlyAnnounced` (same-hash hit, different-hash/-package miss, window=0 disable, empty
+hash, 300s-old row outside 120s / inside 600s) + config default/override coverage. `go test -race
+./...` green.
+
+Prior session — **obfuscated-payload hardening** (real bypass reported by the user: an inline
 `python3 - <<EOF` heredoc whose "IP allowlist" was an array of decimal ASCII codes decoded with
 `chr(int(x))` and run via `os.system("".join(...))`, disguised by comments; qwen only rated it
 SUSPICIOUS so it wasn't blocked). Root cause: the heuristics had **no** patterns for runtime string

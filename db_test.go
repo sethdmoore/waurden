@@ -240,3 +240,51 @@ func TestRecordScanBlockedFlagPersists(t *testing.T) {
 	}
 	_ = time.Now // keep time import if unused elsewhere
 }
+
+func TestRecentlyAnnounced(t *testing.T) {
+	db := newTestDB(t)
+	upsertRecord(db, sampleRecord("pkg-a"))
+	upsertRecord(db, sampleRecord("pkg-b"))
+
+	okV := Verdict{Verdict: "ok", Confidence: 0.9, Findings: []Finding{}}
+	if err := recordScan(db, "pkg-a", "h1", "static", okV, false); err != nil {
+		t.Fatalf("recordScan: %v", err)
+	}
+
+	// Just-recorded (name, hash) is within any positive window.
+	if seen, err := recentlyAnnounced(db, "pkg-a", "h1", 120); err != nil || !seen {
+		t.Errorf("recentlyAnnounced(pkg-a,h1,120) = %v,%v; want true,nil", seen, err)
+	}
+	// A different hash for the same package is NOT deduped — a PKGBUILD edit must
+	// re-announce.
+	if seen, _ := recentlyAnnounced(db, "pkg-a", "h2", 120); seen {
+		t.Error("different hash reported as recently announced")
+	}
+	// A different package with the same hash is NOT deduped.
+	if seen, _ := recentlyAnnounced(db, "pkg-b", "h1", 120); seen {
+		t.Error("different package reported as recently announced")
+	}
+	// Window of 0 disables dedup entirely (always print).
+	if seen, _ := recentlyAnnounced(db, "pkg-a", "h1", 0); seen {
+		t.Error("windowSeconds=0 should disable dedup")
+	}
+	// Empty hash never matches (unknown/unhashable package).
+	if seen, _ := recentlyAnnounced(db, "pkg-a", "", 120); seen {
+		t.Error("empty hash should never match")
+	}
+
+	// A scan older than the window is outside it: insert one 300s in the past and
+	// probe both sides of the boundary.
+	old := time.Now().UTC().Add(-300 * time.Second).Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO scans
+		(package, scanned_at, pkgbuild_hash, verdict, confidence, blocked, provider)
+		VALUES (?,?,?,?,?,?,?)`, "pkg-b", old, "old", "ok", 0.9, 0, "static"); err != nil {
+		t.Fatalf("insert old scan: %v", err)
+	}
+	if seen, _ := recentlyAnnounced(db, "pkg-b", "old", 120); seen {
+		t.Error("scan 300s old should be outside a 120s window")
+	}
+	if seen, err := recentlyAnnounced(db, "pkg-b", "old", 600); err != nil || !seen {
+		t.Errorf("scan 300s old should be inside a 600s window: %v,%v", seen, err)
+	}
+}
