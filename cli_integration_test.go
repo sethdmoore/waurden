@@ -208,13 +208,101 @@ func TestCLIShowRecheckForgetRoundTrip(t *testing.T) {
 
 func TestCLIAllowNonTTY(t *testing.T) {
 	home := staticConfigHome(t)
-	// Non-TTY allow records an ack directly (no typed phrase required).
+	// Non-TTY allow without the explicit flag refuses: there is no terminal to
+	// type "I accept the risk" on, and a silent scripted ack would let anything
+	// bless a blocked package without anyone accepting the risk.
 	r := runCLI(t, home, "", "allow", absSample(t, "benign"))
+	if r.code == 0 {
+		t.Fatalf("allow without --i-accept-the-risk should refuse, stdout=%q", r.stdout)
+	}
+	if !strings.Contains(r.stderr, "--i-accept-the-risk") {
+		t.Errorf("refusal should name the flag, stderr=%q", r.stderr)
+	}
+
+	// With the flag, the ack records (the flag is the non-TTY stand-in for the
+	// typed phrase).
+	r = runCLI(t, home, "", "allow", "--i-accept-the-risk", absSample(t, "benign"))
 	if r.code != 0 {
 		t.Fatalf("allow exit=%d stderr=%s", r.code, r.stderr)
 	}
 	if !strings.Contains(r.stdout, "recorded ack: hello-world") {
 		t.Errorf("allow stdout = %q stderr=%q", r.stdout, r.stderr)
+	}
+}
+
+func TestCLIHaltBreaker(t *testing.T) {
+	home := staticConfigHome(t)
+
+	// A malicious gate blocks, prints the recovery guidance, and trips the
+	// run-level breaker.
+	r := runCLI(t, home, "", "gate", absSample(t, "malicious"))
+	if r.code != 1 {
+		t.Fatalf("gate malicious exit=%d stderr=%s", r.code, r.stderr)
+	}
+	for _, want := range []string{"less ", "waurden allow ", "I accept the risk"} {
+		if !strings.Contains(r.stderr, want) {
+			t.Errorf("block guidance missing %q:\n%s", want, r.stderr)
+		}
+	}
+
+	// A subsequent gate for a DIFFERENT package now halts without scanning —
+	// this is what stops an AUR helper's sibling builds after one block.
+	r = runCLI(t, home, "", "gate", absSample(t, "benign"))
+	if r.code != 1 {
+		t.Fatalf("sibling gate should halt, exit=%d stderr=%s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stderr, "halting this build") {
+		t.Errorf("sibling gate stderr = %q", r.stderr)
+	}
+
+	// The blocked package's own gate is exempt from the halt: it re-blocks on
+	// its own (re-decided) verdict, keeping the ack short-circuit reachable.
+	r = runCLI(t, home, "", "gate", absSample(t, "malicious"))
+	if r.code != 1 || strings.Contains(r.stderr, "halting this build") {
+		t.Errorf("own gate: exit=%d stderr=%q", r.code, r.stderr)
+	}
+
+	// resume lifts the halt without acknowledging anything…
+	r = runCLI(t, home, "", "resume")
+	if r.code != 0 || !strings.Contains(r.stdout, "cleared") {
+		t.Fatalf("resume: exit=%d stdout=%q stderr=%q", r.code, r.stdout, r.stderr)
+	}
+	// …so the sibling builds again. (The malicious package itself would still
+	// block on its own verdict.)
+	r = runCLI(t, home, "", "gate", absSample(t, "benign"))
+	if r.code != 0 {
+		t.Fatalf("gate benign after resume exit=%d stderr=%s", r.code, r.stderr)
+	}
+}
+
+func TestCLIAllowLiftsHalt(t *testing.T) {
+	home := staticConfigHome(t)
+
+	// Block → halt is active for siblings.
+	if r := runCLI(t, home, "", "gate", absSample(t, "malicious")); r.code != 1 {
+		t.Fatalf("gate malicious exit=%d stderr=%s", r.code, r.stderr)
+	}
+	// Acknowledging the blocked package resolves its halt…
+	r := runCLI(t, home, "", "allow", "--i-accept-the-risk", absSample(t, "malicious"))
+	if r.code != 0 {
+		t.Fatalf("allow exit=%d stderr=%s", r.code, r.stderr)
+	}
+	// …so a sibling gate proceeds…
+	if r := runCLI(t, home, "", "gate", absSample(t, "benign")); r.code != 0 {
+		t.Fatalf("sibling after allow exit=%d stderr=%s", r.code, r.stderr)
+	}
+	// …and the acknowledged package itself passes via the hash-pinned ack.
+	r = runCLI(t, home, "", "gate", absSample(t, "malicious"))
+	if r.code != 0 || !strings.Contains(r.stderr, "previously acknowledged") {
+		t.Errorf("acked gate: exit=%d stderr=%q", r.code, r.stderr)
+	}
+}
+
+func TestCLIResumeNoHalt(t *testing.T) {
+	home := staticConfigHome(t)
+	r := runCLI(t, home, "", "resume")
+	if r.code != 0 || !strings.Contains(r.stdout, "no active halt") {
+		t.Errorf("resume with empty ledger: exit=%d stdout=%q", r.code, r.stdout)
 	}
 }
 

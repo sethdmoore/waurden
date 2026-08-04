@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"time"
 )
 
 const version = "0.1.0"
@@ -76,6 +77,8 @@ func main() {
 		runForget(args)
 	case "allow":
 		runAllow(args)
+	case "resume":
+		runResume()
 	case "configure":
 		runConfigureCmd()
 	case "install-hooks":
@@ -104,6 +107,10 @@ Usage:
                              --targets   read pkgnames on stdin (pacman hook use)
   waurden allow [DIR]        acknowledge a blocked package for its current
                              PKGBUILD hash (cleared when the PKGBUILD changes)
+                             --i-accept-the-risk  skip the typed confirmation
+                             (required when there is no TTY to type it on)
+  waurden resume             clear the post-block halt so builds may proceed
+                             (without acknowledging the blocked package)
   waurden tokens             report LLM token usage: this run / today / week /
                              month / all time
   waurden recheck <pkgname>  invalidate the cached verdict so the next scan re-runs
@@ -325,6 +332,18 @@ func runGateCmd(args []string) {
 	if pf.Name != "unknown" {
 		existing, _ = lookupRecord(db, pf.Name)
 	}
+	// Run-level trip-breaker: if any gate blocked a package within the halt
+	// window, refuse to run this one too. The AUR helper invokes makepkg (and so
+	// this gate) once per package per phase as independent processes, so this
+	// shared check is what turns one package's block into "stop the whole run"
+	// instead of "its siblings keep building". Checked before any scan/network
+	// work; the blocked package's own gate is exempt (its own scan re-decides,
+	// and its ack short-circuit must stay reachable).
+	if h, herr := activeHalt(db, pf.Name, cfg.HaltWindow); herr == nil && h != nil && haltApplies(cfg, h) {
+		printHaltNotice(h)
+		os.Exit(1)
+	}
+
 	aurInfo := fetchAURInfo(pf.PkgBase, cfg.Timeout)
 	printAURWarnings(pf.Name, aurInfo)
 	trackNewCommitters(&pf, existing)
@@ -355,6 +374,12 @@ func runGateCmd(args []string) {
 	if v.ScanFailed {
 		if cfg.OnError == "block" {
 			fmt.Fprintf(os.Stderr, "wAURden: %s — build blocked, scan failed (on_error=block): %v\n", pf.Name, v.Summary)
+			// Trip the run-level breaker (verdict "error": an infrastructure
+			// failure, not a judgement) and tell the user their options — the
+			// provider may be down, and a wall of blocked siblings with no
+			// recovery path is how a user ends up uninstalling the guard.
+			recordHalt(db, pf.Name, pf.Hash, "error", truncate(v.Summary))
+			printScanFailGuidance(cfg)
 			os.Exit(1)
 		}
 		// on_error=warn: emit a single per-package terminal line so this
@@ -451,6 +476,12 @@ func runGateCmd(args []string) {
 			}
 		}
 		if blocked {
+			// Trip the run-level breaker so sibling gates in this helper run
+			// halt too, then leave the user a concrete recovery path: how to
+			// read the PKGBUILD (and its diff since the last clean scan), and
+			// how to accept this exact version if they judge it safe.
+			recordHalt(db, pf.Name, pf.Hash, v.Verdict, truncate(v.Summary))
+			printBlockGuidance(pf, existing, v)
 			os.Exit(1)
 		}
 	} else if isTTY() {
@@ -680,8 +711,13 @@ func runForget(args []string) {
 // real terminal. The ack is voided automatically when the PKGBUILD hash changes.
 func runAllow(args []string) {
 	dir := "."
-	if len(args) > 0 {
-		dir = args[0]
+	flagAccepted := false
+	for _, a := range args {
+		if a == "--i-accept-the-risk" {
+			flagAccepted = true
+			continue
+		}
+		dir = a
 	}
 
 	cfg, configFound, err := loadConfig()
@@ -728,9 +764,16 @@ func runAllow(args []string) {
 		printReport(os.Stderr, pf.Name, v, providerLabel(cfg))
 	}
 
-	// Symmetry with the gate's high-friction override: require the typed phrase
-	// when a human is present. Non-TTY (scripted) callers skip straight to record.
-	if isTTY() {
+	// Symmetry with the gate's high-friction override: an acknowledgement always
+	// costs an explicit acceptance of risk. At a TTY that is the typed phrase;
+	// without one (scripts, CI) the --i-accept-the-risk flag stands in for it.
+	// A non-TTY call with neither used to record silently — that hole let any
+	// script bless a blocked package without anyone ever accepting anything.
+	if !flagAccepted {
+		if !isTTY() {
+			fmt.Fprintln(os.Stderr, "wAURden: no TTY to confirm on — re-run in a terminal, or pass --i-accept-the-risk.")
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "\nType exactly 'I accept the risk' to acknowledge %s @ %s: ", pf.Name, short(pf.Hash))
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		if !strings.EqualFold(strings.TrimSpace(line), "i accept the risk") {
@@ -884,6 +927,129 @@ func cachedTag(v Verdict) string {
 		return " (cached)"
 	}
 	return ""
+}
+
+// printBlockGuidance follows a block report with the concrete recovery path:
+// how to inspect the PKGBUILD (including the diff since the last clean scan,
+// when one exists), and how to accept this exact version. Printed on every
+// verdict-block exit, TTY or not — under the makepkg hook there is no prompt,
+// so these instructions are the only way out the user sees.
+func printBlockGuidance(pf PackageFiles, existing *DBRecord, v Verdict) {
+	fmt.Fprintf(os.Stderr, "\nwAURden: inspect the PKGBUILD yourself:\n")
+	fmt.Fprintf(os.Stderr, "             less %s\n", filepath.Join(pf.Dir, "PKGBUILD"))
+	// A stored last-scanned commit means the previous scan of this repo passed;
+	// the diff against it is exactly what changed since the version you trusted.
+	if existing != nil && existing.LastScannedCommit != "" {
+		if head, err := gitHeadCommit(pf.Dir); err == nil && head != "" && head != existing.LastScannedCommit {
+			fmt.Fprintf(os.Stderr, "             git -C %s diff %s..HEAD -- PKGBUILD .SRCINFO   (changes since the last clean scan)\n",
+				pf.Dir, short(existing.LastScannedCommit))
+		}
+	}
+	fmt.Fprintf(os.Stderr, "         details of this verdict:\n")
+	fmt.Fprintf(os.Stderr, "             waurden show %s\n", pf.Name)
+	fmt.Fprintf(os.Stderr, "         if you have reviewed it and trust this exact version:\n")
+	fmt.Fprintf(os.Stderr, "             waurden allow %s\n", pf.Dir)
+	fmt.Fprintf(os.Stderr, "         (allow shows the findings and requires typing \"I accept the risk\";\n")
+	fmt.Fprintf(os.Stderr, "          the acceptance is void as soon as the PKGBUILD changes)\n")
+}
+
+// printScanFailGuidance follows a scan-failure block (on_error=block, retries
+// exhausted) with the user's options. This is an infrastructure failure — the
+// model could not be reached or returned garbage — not a judgement about the
+// package, so the guidance is about restoring scanning, not about the PKGBUILD.
+// Deliberately not interactive: under an AUR helper several gates run
+// concurrently, and simultaneous prompts would fight over one terminal.
+func printScanFailGuidance(cfg Config) {
+	fmt.Fprintf(os.Stderr, "\nwAURden: the scan could not complete (transient failures are retried %d times) —\n", scanAttempts)
+	fmt.Fprintf(os.Stderr, "         %s may be down, rate-limiting, or misconfigured.\n", providerLabel(cfg))
+	fmt.Fprintf(os.Stderr, "         Your options (the build is blocked, nothing was executed):\n")
+	fmt.Fprintf(os.Stderr, "           try again later, or switch model/provider for one run:\n")
+	fmt.Fprintf(os.Stderr, "             WAURDEN_PROVIDER=… WAURDEN_MODEL=… WAURDEN_BASE_URL=… <your build command>\n")
+	fmt.Fprintf(os.Stderr, "           switch permanently:      waurden configure\n")
+	fmt.Fprintf(os.Stderr, "           offline heuristics only: WAURDEN_SCAN_MODE=heuristics <your build command>\n")
+	fmt.Fprintf(os.Stderr, "                                    (no LLM; wAURden's pattern checks stay active)\n")
+	fmt.Fprintf(os.Stderr, "           allow unscanned builds:  WAURDEN_ON_ERROR=warn <your build command>\n")
+	fmt.Fprintf(os.Stderr, "                                    (temporarily weakens the gate — failed scans build anyway)\n")
+}
+
+// haltApplies decides whether an active halt binds THIS gate invocation. Verdict
+// halts (malicious/suspicious) always do — a judgement about package content is
+// not weakened by config. A scan-failure halt ("error") is honored only while
+// the current run would still produce one: the outage guidance explicitly tells
+// the user to retry with WAURDEN_ON_ERROR=warn or WAURDEN_SCAN_MODE=heuristics,
+// and a stale infra halt must not defeat the very escape hatch we advertised.
+func haltApplies(cfg Config, h *HaltEvent) bool {
+	if h.Verdict != "error" {
+		return true
+	}
+	return cfg.OnError == "block" && scanMode(cfg) != scanModeHeuristics
+}
+
+// printHaltNotice explains a trip-breaker refusal: some *other* package's gate
+// blocked within the halt window, so this gate is not running at all.
+func printHaltNotice(h *HaltEvent) {
+	what := h.Verdict
+	if what == "error" {
+		what = "scan failure (on_error=block)"
+	}
+	fmt.Fprintf(os.Stderr, "wAURden: halting this build — %s was blocked %s (%s).\n",
+		h.Package, agoString(h.CreatedAt), what)
+	fmt.Fprintf(os.Stderr, "         After a block, all builds are halted for a while so the blocked\n")
+	fmt.Fprintf(os.Stderr, "         package's siblings don't keep building mid-incident.\n")
+	fmt.Fprintf(os.Stderr, "           what happened:        waurden show %s\n", h.Package)
+	fmt.Fprintf(os.Stderr, "           resume other builds:  waurden resume   (e.g. you removed that package)\n")
+	fmt.Fprintf(os.Stderr, "           accept that package:  waurden allow <its build dir>\n")
+}
+
+// agoString renders an RFC3339 timestamp as a rough "42s ago" / "7m ago" for
+// the halt notice. Unparseable input degrades to the raw string.
+func agoString(rfc3339 string) string {
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return "at " + rfc3339
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	if d < 2*time.Minute {
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	}
+	if d < 2*time.Hour {
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh ago", int(d.Hours()))
+}
+
+// runResume clears the run-level halt without acknowledging anything: the user
+// has dealt with the blocked package their own way (removed it from the upgrade,
+// uninstalled it) and wants the remaining builds to proceed.
+func runResume() {
+	cfg, configFound, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: config error: %v\n", err)
+		os.Exit(1)
+	}
+	if !configFound {
+		exitUnconfigured(false)
+	}
+	db, err := openDBFromConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: db error: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	n, err := clearHalts(db)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wAURden: could not clear halts: %v\n", err)
+		os.Exit(1)
+	}
+	if n == 0 {
+		fmt.Println("no active halt — builds were not paused.")
+		return
+	}
+	fmt.Printf("cleared %d halt record(s) — builds may proceed.\n", n)
+	fmt.Println("(the blocked package itself will still be blocked by its own gate)")
 }
 
 func printReport(w *os.File, pkgname string, v Verdict, provider string) {

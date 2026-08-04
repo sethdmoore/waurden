@@ -79,6 +79,17 @@ func serviceFromBaseURL(baseURL string) string {
 	}
 }
 
+// transientError marks a provider failure that is worth a fresh attempt from the
+// top: a transport error (timeout, connection reset, EOF mid-body) or an HTTP 200
+// whose body carried no usable completion (empty choices, empty content). analyze()
+// retries these; errors NOT wrapped in it — a config problem (missing API key), an
+// unknown provider, or an HTTP status postJSON already retried to exhaustion — are
+// surfaced immediately, so the retry budget is never spent on a deterministic failure.
+type transientError struct{ err error }
+
+func (e *transientError) Error() string { return e.err.Error() }
+func (e *transientError) Unwrap() error { return e.err }
+
 func httpClient(cfg Config) *http.Client {
 	timeout := time.Duration(cfg.Timeout) * time.Second
 	if timeout == 0 {
@@ -93,9 +104,13 @@ func postJSON(client *http.Client, url string, headers map[string]string, body i
 		return nil, err
 	}
 
-	// Rate limits (429) and temporary unavailability (503) are transient — common
-	// on free/shared endpoints like OpenRouter's :free models. Retry a few times,
-	// honoring the provider's Retry-After, before surfacing an error.
+	// Rate limits (429), temporary unavailability (503), and gateway flakes
+	// (500/502/504) are transient — common on free/shared endpoints like
+	// OpenRouter's :free models, and on Bedrock under concurrent gate bursts.
+	// Retry a few times, honoring the provider's Retry-After, before surfacing
+	// an error. Transport errors (timeout, reset, EOF mid-body) are returned as
+	// transientError so the caller's outer retry loop gets them instead — they
+	// need a fresh connection, not a Retry-After sleep.
 	const maxAttempts = 3
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequest("POST", url, bytes.NewReader(data))
@@ -108,25 +123,36 @@ func postJSON(client *http.Client, url string, headers map[string]string, body i
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, err
+			return nil, &transientError{err}
 		}
 		respBody, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if readErr != nil {
-			return nil, readErr
+			return nil, &transientError{readErr}
 		}
 		if resp.StatusCode < 400 {
 			return respBody, nil
 		}
-		if (resp.StatusCode == 429 || resp.StatusCode == 503) && attempt < maxAttempts {
+		if retryableStatus(resp.StatusCode) && attempt < maxAttempts {
 			wait := retryAfter(resp.Header.Get("Retry-After"))
-			fmt.Fprintf(os.Stderr, "wAURden: provider rate-limited (HTTP %d), retrying in %s (attempt %d/%d)\n",
+			fmt.Fprintf(os.Stderr, "wAURden: transient provider error (HTTP %d), retrying in %s (attempt %d/%d)\n",
 				resp.StatusCode, wait, attempt, maxAttempts)
 			time.Sleep(wait)
 			continue
 		}
 		return nil, httpError(resp.StatusCode, respBody)
 	}
+}
+
+// retryableStatus reports whether an HTTP status is worth an in-place retry:
+// rate limits and transient server/gateway failures. 4xx client errors (bad key,
+// bad model name) are deterministic and never retried.
+func retryableStatus(code int) bool {
+	switch code {
+	case 429, 500, 502, 503, 504:
+		return true
+	}
+	return false
 }
 
 // retryAfter derives a sleep duration from the Retry-After header, falling back
@@ -235,12 +261,16 @@ func callAnthropic(cfg Config, systemPrompt, userContent string) (string, TokenU
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", TokenUsage{}, fmt.Errorf("parse anthropic response: %w", err)
+		return "", TokenUsage{}, &transientError{fmt.Errorf("parse anthropic response: %w", err)}
 	}
 	if len(result.Content) == 0 {
-		return "", TokenUsage{}, fmt.Errorf("empty anthropic response")
+		return "", TokenUsage{}, &transientError{fmt.Errorf("empty anthropic response")}
 	}
 	text := result.Content[0].Text
+	if strings.TrimSpace(text) == "" {
+		// HTTP 200 with a blank completion — seen as provider flake under load.
+		return "", TokenUsage{}, &transientError{fmt.Errorf("empty content in anthropic response")}
+	}
 	usage := usageOrEstimate(result.Usage.InputTokens, result.Usage.OutputTokens, systemPrompt+userContent, text)
 	return text, usage, nil
 }
@@ -290,12 +320,19 @@ func callOpenAI(cfg Config, systemPrompt, userContent string) (string, TokenUsag
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return "", TokenUsage{}, fmt.Errorf("parse openai response: %w", err)
+		return "", TokenUsage{}, &transientError{fmt.Errorf("parse openai response: %w", err)}
 	}
 	if len(result.Choices) == 0 {
-		return "", TokenUsage{}, fmt.Errorf("empty openai response")
+		return "", TokenUsage{}, &transientError{fmt.Errorf("empty openai response")}
 	}
 	content := result.Choices[0].Message.Content
+	if strings.TrimSpace(content) == "" {
+		// HTTP 200, choices present, but a blank completion — the exact failure
+		// seen from OpenRouter/Bedrock under a concurrent gate burst. Previously
+		// this was returned as success and died later in parseVerdict with "no
+		// JSON object found in response", which is not retried the same way.
+		return "", TokenUsage{}, &transientError{fmt.Errorf("empty content in openai response")}
+	}
 	usage := usageOrEstimate(result.Usage.PromptTokens, result.Usage.CompletionTokens, systemPrompt+userContent, content)
 	return content, usage, nil
 }

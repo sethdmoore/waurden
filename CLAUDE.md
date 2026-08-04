@@ -599,6 +599,41 @@ too, but none of those packages are in the DB → empty recap → print nothing)
 - The recap depends on the pacman hook being installed (`sudo waurden install-hooks`). makepkg-hook-only
   users get Part 1's clean lines but no recap — state this in the README.
 
+### Run-level trip-breaker + scan retries + block/outage guidance (DONE)
+
+**Motivation (real `yay -Syyu`):** blocking is per-package — makepkg's exit kills only that one
+package's process, and yay keeps building the siblings, deferring the error report. And two of those
+blocks were spurious: HTTP 200 responses with blank completions hit `on_error=block` with zero
+retries (`postJSON` only covered 429/503).
+
+**Locked decisions:**
+- **Trip-breaker (`halts` table, additive `CREATE TABLE IF NOT EXISTS`):** every block (verdict, or
+  scan-failure under `on_error=block`, stored as verdict `"error"`) inserts a halt row; every gate
+  checks `activeHalt` **first** and exits 1 while a halt is younger than `halt_window_seconds`
+  (default 900; 0 = off). The blocked package itself is exempt (its own scan re-decides; keeps the
+  ack short-circuit reachable). Cleared by: `waurden resume` (clear all), an ack of the blocked hash
+  (`storeAcknowledgement` deletes that package's rows; `activeHalt` also has a NOT EXISTS guard on
+  `acknowledged_hash` for rows an older binary didn't delete), or expiry. `scan` never checks halts.
+- **Error-halts are policy-scoped (`haltApplies`):** a scan-failure halt binds only while
+  `on_error == "block"` and `scan_mode != heuristics` — otherwise a stale infra halt would defeat the
+  advertised `WAURDEN_ON_ERROR=warn` / `WAURDEN_SCAN_MODE=heuristics` escape hatches. Verdict halts
+  always bind.
+- **Retries:** `transientError` (provider.go) marks transport errors, 200-with-no-choices, and blank
+  completions; `postJSON` retries 429/500/502/503/504 in place (Retry-After honored); `analyze()`
+  wraps call+parse in a `scanAttempts`(=3) loop retrying transient + parse failures only —
+  deterministic failures (401 bad key, unknown model) burn one attempt. Backoff sleeps through the
+  `scanRetrySleep` seam (tests no-op it).
+- **No interactive prompts in the gate's failure paths** — under a helper, several gates share one
+  terminal concurrently; guidance is printed, not asked. (Same sharing is why the animated tree
+  render garbles when sibling downloads write concurrently — open follow-up: use the plain renderer
+  under the gate, keep animation for user-invoked `scan`.)
+- **`waurden allow` without a TTY requires `--i-accept-the-risk`** (previously it recorded silently —
+  a hole). At a TTY the typed phrase stays; the flag skips it.
+- Block guidance (`printBlockGuidance`): `less <dir>/PKGBUILD`, `git -C <dir> diff <last>..HEAD`
+  when HEAD moved past `last_scanned_commit`, `waurden show`, `waurden allow`. Outage guidance
+  (`printScanFailGuidance`): one-run `WAURDEN_PROVIDER/MODEL/BASE_URL`, `waurden configure`,
+  `WAURDEN_SCAN_MODE=heuristics`, `WAURDEN_ON_ERROR=warn`.
+
 ### Front-loaded dependency-tree scan + self-managed clones + diffs (NOT YET IMPLEMENTED — full spec for a fresh session)
 
 **One-line goal:** when a user runs `yay -S foo` (any helper), wAURden discovers the *entire

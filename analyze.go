@@ -3,12 +3,22 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 )
+
+// scanAttempts is how many times one scan will call the provider before giving
+// up and falling to on_error handling: the wire call and the verdict parse get
+// this shared budget (postJSON's internal Retry-After loop for 429/503 is
+// separate and per-call). 3 total attempts keeps a gate's worst case bounded.
+const scanAttempts = 3
+
+// scanRetrySleep is the between-attempt backoff, a seam so tests don't sleep.
+var scanRetrySleep = time.Sleep
 
 type Finding struct {
 	Severity string `json:"severity"`
@@ -671,32 +681,52 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 		fmt.Fprintf(os.Stderr, "wAURden: scanning %s…\n", pf.Name)
 	}
 
-	raw, usage, err := callProvider(cfg, systemPrompt, userContent)
-	// Count the tokens this call consumed, before parsing — a call that succeeds
-	// on the wire but returns unparseable content was still billed. static/mock
-	// returns a zero usage (no network, no tokens), so nothing is recorded for it.
-	if err == nil && usage.Total() > 0 {
-		if e := recordTokenUsage(db, tokenSession, pf.Name, cfg.Provider, cfg.Model, usage); e != nil {
-			fmt.Fprintf(os.Stderr, "wAURden: could not record token usage: %v\n", e)
+	// Call + parse, with retries. Transient provider failures (transport errors,
+	// HTTP 200 with a blank/garbled completion) and verdict-parse failures are
+	// re-attempted — an "Atomic Arch"-era block over a provider hiccup, or a build
+	// waved through under on_error=warn, are both worse than a few seconds' delay.
+	// Deterministic failures (bad API key, unknown model, statuses postJSON already
+	// retried to exhaustion) skip the remaining attempts. Token usage is recorded
+	// per wire-successful attempt — an unparseable completion was still billed.
+	var v Verdict
+	var lastErr error
+	for attempt := 1; attempt <= scanAttempts; attempt++ {
+		if attempt > 1 {
+			fmt.Fprintf(os.Stderr, "wAURden: %s — scan attempt %d/%d…\n", pf.Name, attempt, scanAttempts)
+			scanRetrySleep(time.Duration(attempt-1) * 2 * time.Second)
 		}
+		raw, usage, err := callProvider(cfg, systemPrompt, userContent)
+		if err == nil && usage.Total() > 0 {
+			if e := recordTokenUsage(db, tokenSession, pf.Name, cfg.Provider, cfg.Model, usage); e != nil {
+				fmt.Fprintf(os.Stderr, "wAURden: could not record token usage: %v\n", e)
+			}
+		}
+		if err != nil {
+			lastErr = err
+			var te *transientError
+			if errors.As(err, &te) {
+				continue
+			}
+			break
+		}
+		v, err = parseVerdict(raw)
+		if err != nil {
+			lastErr = fmt.Errorf("parse LLM response: %w", err)
+			continue
+		}
+		lastErr = nil
+		break
 	}
-	if err != nil {
+	if lastErr != nil {
 		// Never cache a failed scan. verdictFromOnError returns a verdict="ok"
 		// fallback whose ScanFailed flag is json:"-", so it is NOT reconstructed
 		// on a cache hit (see the hash-match path above). Persisting it would let
 		// the next run of the same pkgbuild_hash read a plain cached "ok" and pass
 		// the gate without ever re-scanning — defeating on_error="block" on the
-		// second run. A provider error is an infrastructure outcome, not a verdict
-		// about this PKGBUILD's content, so we skip the store and re-attempt every
-		// run, keeping the gate fail-closed.
-		return verdictFromOnError(cfg, err), nil
-	}
-
-	v, err := parseVerdict(raw)
-	if err != nil {
-		// Same reasoning as the provider-error path above: a parse failure is not
-		// a content verdict, so it must not be cached.
-		return verdictFromOnError(cfg, fmt.Errorf("parse LLM response: %w", err)), nil
+		// second run. A provider/parse error is an infrastructure outcome, not a
+		// verdict about this PKGBUILD's content, so we skip the store and
+		// re-attempt every run, keeping the gate fail-closed.
+		return verdictFromOnError(cfg, lastErr), nil
 	}
 
 	// Fold in any advisory heuristic findings the LLM didn't already surface, so

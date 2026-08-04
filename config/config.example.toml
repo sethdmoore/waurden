@@ -71,6 +71,15 @@ timeout_seconds = 60
 # dedup (print on every phase).
 # gate_quiet_window_seconds = 120
 
+# Run-level trip-breaker. After any gate blocks a package (bad verdict, or a
+# scan failure under on_error=block), EVERY gate invoked within this many
+# seconds refuses to run — so when your AUR helper builds several packages and
+# one is blocked, the siblings' builds halt too instead of continuing around
+# the block. Clear it early with `waurden resume` (e.g. after removing the
+# blocked package from the upgrade) or by acknowledging the blocked package
+# (`waurden allow <dir>`). 0 disables the breaker (per-package blocking only).
+# halt_window_seconds = 900
+
 # Where wAURden keeps its own inert AUR clones (never built — used only to
 # discover, pre-scan, and diff dependency PKGBUILDs). Default ~/.cache/waurden/aur.
 # clone_dir = "~/.cache/waurden/aur"

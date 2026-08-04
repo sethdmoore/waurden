@@ -509,6 +509,10 @@ func runTreeGate(cfg Config, db *sql.DB, pf PackageFiles, root *AURNode, existin
 		if cfg.OnError == "block" {
 			fmt.Fprintf(os.Stderr, "wAURden: %s — build blocked, scan failed (on_error=block): %v\n",
 				root.Name, root.Verdict.Summary)
+			// Trip the run-level breaker and show recovery options, exactly like
+			// the single-package gate (see runGateCmd's ScanFailed path).
+			recordHalt(db, root.Name, root.Hash, "error", truncate(root.Verdict.Summary))
+			printScanFailGuidance(cfg)
 			os.Exit(1)
 		}
 		fmt.Fprintf(os.Stderr, "wAURden: %s — could not scan (%s); build allowed (on_error=warn)\n",
@@ -546,6 +550,11 @@ func runTreeGate(cfg Config, db *sql.DB, pf PackageFiles, root *AURNode, existin
 	}
 
 	if len(blocked) > 0 {
+		// Every blocked node trips the run-level breaker, so sibling gates in
+		// this helper run halt too (see activeHalt in runGateCmd).
+		for _, n := range blocked {
+			recordHalt(db, n.Name, n.Hash, n.Verdict.Verdict, truncate(n.Verdict.Summary))
+		}
 		printTreeBlock(worstNode(blocked))
 		os.Exit(treeExitCode(blocked))
 	}
@@ -603,10 +612,11 @@ func printTreeBlock(n *AURNode) {
 	if s := truncate(n.Verdict.Summary); s != "" {
 		fmt.Fprintf(os.Stderr, "         %s\n", s)
 	}
-	fmt.Fprintf(os.Stderr, "         Review the PKGBUILD:  %s\n", pkgbuild)
+	fmt.Fprintf(os.Stderr, "         Review the PKGBUILD:  less %s\n", pkgbuild)
 	fmt.Fprintf(os.Stderr, "         Details:              waurden show %s\n", n.Name)
 	fmt.Fprintf(os.Stderr, "         Remove the package, or explicitly allow this exact version:\n")
 	fmt.Fprintf(os.Stderr, "             waurden allow %s\n", n.Dir)
+	fmt.Fprintf(os.Stderr, "         (allow shows the findings and requires typing \"I accept the risk\")\n")
 }
 
 // treeInteractiveAccept prompts to override a single blocked node and, on

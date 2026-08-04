@@ -39,6 +39,13 @@ type Config struct {
 	// gate (every phase still runs and still blocks). Only the clean OK line is
 	// deduped — warnings and blocks always print. 0 = never dedup (print every time).
 	GateQuietWindow int `toml:"gate_quiet_window_seconds" envconfig:"GATE_QUIET_WINDOW_SECONDS"`
+	// HaltWindow is the run-level trip-breaker: after any gate blocks (bad verdict
+	// or scan failure under on_error=block), EVERY gate invoked within this many
+	// seconds refuses to run, so an AUR helper's remaining per-package makepkg
+	// invocations die too instead of building the blocked package's siblings.
+	// Cleared early by `waurden resume` or by acknowledging the blocked package
+	// (`waurden allow`). 0 disables the breaker (per-package blocking only).
+	HaltWindow int `toml:"halt_window_seconds" envconfig:"HALT_WINDOW_SECONDS"`
 	// CloneDir is where wAURden keeps its own inert AUR clones (never built), used
 	// to discover/pre-scan/diff dependency PKGBUILDs. Default ~/.cache/waurden/aur.
 	CloneDir    string   `toml:"clone_dir"       envconfig:"CLONE_DIR"`
@@ -60,6 +67,7 @@ func loadConfig() (Config, bool, error) {
 		TreeScan:         true,
 		TreePauseSeconds: 1,
 		GateQuietWindow:  120,
+		HaltWindow:       900,
 		BlockOn:          []string{"malicious"},
 		WarnOn:           []string{"suspicious"},
 		OnError:          "warn",

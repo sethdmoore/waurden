@@ -120,6 +120,28 @@ CREATE TABLE IF NOT EXISTS token_usage (
 
 const tokenUsageIndex = `CREATE INDEX IF NOT EXISTS idx_token_usage_time ON token_usage(used_at DESC);`
 
+// halts is the run-level trip-breaker ledger: one row per gate block (a policy
+// block or a scan failure under on_error=block). While a row is younger than
+// halt_window_seconds, EVERY subsequent gate refuses to run — an AUR helper
+// invokes makepkg (and so the gate) once per package per phase as independent
+// processes, so this shared table is what lets one package's block stop the
+// whole helper run instead of only its own build. Rows are cleared by
+// `waurden resume`, by an acknowledgement of the blocked hash (`waurden allow`
+// or the interactive gate override), or by simply aging out of the window.
+// verdict is the blocking verdict, or "error" for a scan failure under
+// on_error=block — error halts bind only while the current config would still
+// produce one (see haltApplies). Additive CREATE TABLE IF NOT EXISTS — old DBs
+// gain it, no wipe.
+const haltsSchema = `
+CREATE TABLE IF NOT EXISTS halts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    package       TEXT NOT NULL,
+    pkgbuild_hash TEXT,
+    verdict       TEXT,
+    reason        TEXT,
+    created_at    TEXT NOT NULL
+);`
+
 func openDB(path string, busyTimeoutSeconds int) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, fmt.Errorf("create db dir: %w", err)
@@ -147,7 +169,7 @@ func openDB(path string, busyTimeoutSeconds int) (*sql.DB, error) {
 	// Each statement runs separately: database/sql's Exec is one-statement, and
 	// CREATE TABLE IF NOT EXISTS makes adding the scans table safe on an existing
 	// DB (additive, no wipe — see MIGRATIONS.md).
-	for _, stmt := range []string{schema, scansSchema, scansIndex, tokenUsageSchema, tokenUsageIndex} {
+	for _, stmt := range []string{schema, scansSchema, scansIndex, tokenUsageSchema, tokenUsageIndex, haltsSchema} {
 		if _, err := db.Exec(stmt); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("migrate db: %w", err)
@@ -263,6 +285,11 @@ func storeAcknowledgement(db *sql.DB, name, hash string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Acknowledging a package resolves its trip-breaker halts: the user has made
+	// an explicit decision about it, so sibling builds may proceed. Best-effort —
+	// a failed delete only means the halt ages out of the window instead (or is
+	// cleared by `waurden resume`); it must not fail the ack itself.
+	db.Exec(`DELETE FROM halts WHERE package = ?`, name)
 	return res.RowsAffected()
 }
 
@@ -337,6 +364,69 @@ func recentlyAnnounced(db *sql.DB, name, hash string, windowSeconds int) (bool, 
 		return false, err
 	}
 	return true, nil
+}
+
+// HaltEvent is one row of the trip-breaker ledger (see haltsSchema).
+type HaltEvent struct {
+	Package   string
+	Hash      string
+	Verdict   string // ok|suspicious|malicious, or "error" for a scan failure
+	Reason    string
+	CreatedAt string
+}
+
+// recordHalt appends a trip-breaker row: this package's gate just blocked, so
+// every other gate within halt_window_seconds must refuse too. verdict is the
+// blocking verdict, or "error" for a scan failure under on_error=block. Called
+// on every block exit; non-fatal for callers (a failed insert only weakens the
+// sibling halt, never the block itself, which has already been decided).
+func recordHalt(db *sql.DB, name, hash, verdict, reason string) error {
+	_, err := db.Exec(`INSERT INTO halts (package, pkgbuild_hash, verdict, reason, created_at)
+		VALUES (?,?,?,?,?)`,
+		name, hash, verdict, reason, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// activeHalt returns the newest unresolved halt within windowSeconds, or nil.
+// excludeName filters out the caller's own package: its own block is re-decided
+// by its own scan every gate, so only *sibling* blocks halt it. A halt is
+// resolved by an acknowledgement of the exact blocked hash (`waurden allow` and
+// the interactive override both write acknowledged_hash and delete the rows,
+// but the NOT EXISTS guard also covers an ack recorded by an older binary that
+// didn't delete). windowSeconds <= 0 disables the breaker entirely.
+func activeHalt(db *sql.DB, excludeName string, windowSeconds int) (*HaltEvent, error) {
+	if windowSeconds <= 0 {
+		return nil, nil
+	}
+	threshold := time.Now().UTC().Add(-time.Duration(windowSeconds) * time.Second).Format(time.RFC3339)
+	var h HaltEvent
+	err := db.QueryRow(`SELECT h.package, COALESCE(h.pkgbuild_hash,''), COALESCE(h.verdict,''),
+			COALESCE(h.reason,''), h.created_at
+		FROM halts h
+		WHERE h.created_at >= ? AND h.package != ?
+		  AND NOT EXISTS (SELECT 1 FROM packages p WHERE p.name = h.package
+		                  AND COALESCE(p.acknowledged_hash,'') != ''
+		                  AND p.acknowledged_hash = COALESCE(h.pkgbuild_hash,''))
+		ORDER BY h.created_at DESC, h.id DESC LIMIT 1`,
+		threshold, excludeName).Scan(&h.Package, &h.Hash, &h.Verdict, &h.Reason, &h.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+// clearHalts removes every trip-breaker row — `waurden resume`, the explicit
+// "I've dealt with it, let builds proceed" action (e.g. the user removed the
+// blocked package from the upgrade rather than allowing it).
+func clearHalts(db *sql.DB) (int64, error) {
+	res, err := db.Exec(`DELETE FROM halts`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // recentScans returns scan events newest-first, optionally only those policy

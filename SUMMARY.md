@@ -1,4 +1,37 @@
-Latest session — **tree render: once per package, no repo leaves.** A real `yay -Syu` reprinted the
+Latest session — **run-level trip-breaker ("stop yay in its tracks") + scan retries + block/outage
+guidance.** Diagnosed a real `yay -Syyu`: two packages "blocked" correctly but yay kept building the
+siblings (makepkg's exit only kills that one package's process; yay defers the error report), and the
+blocks themselves were spurious — HTTP 200 responses with blank/unparseable completions took the
+`on_error=block` path with **zero** retries (the existing `postJSON` loop only covered HTTP 429/503).
+Fixes: (1) **Retries** — new `transientError` marker (`provider.go`); transport errors, 200-with-no-
+choices, and blank completions are transient; `postJSON` also retries 500/502/504; `analyze()` wraps
+call+parse in a `scanAttempts`(=3) loop (backoff via the `scanRetrySleep` seam) that retries transient
++ parse failures but not deterministic ones (a 401 burns 1 attempt). (2) **Trip-breaker** — new
+additive `halts` table (`db.go`: `recordHalt`/`activeHalt`/`clearHalts`); every block (verdict, or
+scan-fail under on_error=block → verdict "error") records a halt; every gate checks `activeHalt` first
+(self exempt; an ack of that exact hash resolves it) and exits 1 within `halt_window_seconds` (default
+900, env `WAURDEN_HALT_WINDOW_SECONDS`, 0=off) — so the helper's remaining per-package makepkg
+invocations die at their next phase. `waurden allow` clears that package's halts (in
+`storeAcknowledgement`); new **`waurden resume`** clears all. **Error-halts bind only while the
+current config would still produce one** (`haltApplies`): otherwise a stale infra halt would defeat
+the advertised `WAURDEN_ON_ERROR=warn` / `WAURDEN_SCAN_MODE=heuristics` escape hatches.
+
+Second half — **guidance + allow hardening.** Verdict blocks now print `printBlockGuidance`: `less
+<dir>/PKGBUILD`, a `git -C <dir> diff <last_scanned_commit>..HEAD -- PKGBUILD .SRCINFO` line when HEAD
+moved past the stored commit, `waurden show`, and the `waurden allow` path (with its typed-phrase
+warning). Scan-fail blocks print `printScanFailGuidance`: one-run env overrides
+(`WAURDEN_PROVIDER/MODEL/BASE_URL`), `waurden configure`, offline `WAURDEN_SCAN_MODE=heuristics`, and
+`WAURDEN_ON_ERROR=warn` — deliberately **not** interactive (concurrent gates share one terminal; that
+same sharing is why the animated tree render garbled mid-download in the diagnosed log — un-fixed,
+noted as follow-up: the gate path should probably use the plain renderer). `waurden allow` with no TTY
+no longer records silently: it now requires the new `--i-accept-the-risk` flag (a TTY keeps the typed
+phrase; the flag also skips it). Tests: `halt_retry_test.go` (ledger window/self/ack-resolution/
+expiry, `haltApplies`, guidance printers, transient classification, postJSON-500, analyze
+retry/give-up/deterministic) + CLI `TestCLIHaltBreaker`/`TestCLIAllowLiftsHalt`/`TestCLIResumeNoHalt`;
+`TestCLIAllowNonTTY` updated to the new refusal. Docs: README ("One block halts the whole run", "LLM
+outage"), config.example.toml, usage text. `go test -race ./...` green.
+
+Prior session — **tree render: once per package, no repo leaves.** A real `yay -Syu` reprinted the
 whole dep-tree 4–5× per package (one makepkg.conf.d gate per phase — source/dep-check/build/fakeroot,
 each a separate process re-resolving + re-rendering) and each tree was mostly a wall of dimmed `repo:`
 leaves burying the AUR nodes. Two fixes, both display-only (resolution/classification unchanged).

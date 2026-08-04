@@ -136,6 +136,11 @@ waurden gate [DIR]        # Scan the package + its AUR dep tree; exit 1/2 to abo
 waurden show <pkgname>    # Show stored verdict for a package
                           #   --verbose  also print the stored PKGBUILD diff
 waurden summary           # Table of all scanned packages with verdicts
+waurden allow [DIR]       # Accept a blocked package at its current PKGBUILD hash
+                          #   requires typing "I accept the risk" (or the
+                          #   --i-accept-the-risk flag when there is no TTY);
+                          #   void as soon as the PKGBUILD changes
+waurden resume            # Clear the post-block halt so other builds proceed
 waurden tokens            # LLM token usage: this run / today / week / month / all time
 waurden recheck <pkgname> # Invalidate the cached verdict so the next scan re-runs
 waurden forget <pkgname>  # Permanently delete a package's records (verdict + history)
@@ -151,6 +156,40 @@ waurden version
 - **Hardened prompts**: PKGBUILD content is XML-delimited with an injection disclaimer; shell comments are stripped before submission.
 - **Second opinion**: wAURden augments your review, not replaces it. The same PKGBUILD you see is what the LLM analyzes.
 - **Fail-safe default**: `on_error = "warn"` — an unreachable LLM warns loudly but does not block every upgrade.
+
+### One block halts the whole run
+
+AUR helpers (yay, paru) invoke makepkg once per package, so each package's gate
+is an independent process — makepkg dying for one blocked package does not stop
+the helper from building the rest. To get stop-everything behavior anyway,
+wAURden records every block in its DB: while a block is younger than
+`halt_window_seconds` (default 15 minutes), **every** subsequent gate refuses to
+run, so the remaining builds in the same helper run die at their next makepkg
+phase instead of compiling and installing around the block.
+
+To recover after dealing with the blocked package:
+
+- `waurden allow <dir>` — you reviewed it and accept that exact PKGBUILD; this
+  also lifts the halt caused by that block, or
+- `waurden resume` — you dealt with it another way (removed it from the
+  upgrade, uninstalled it); lifts the halt without accepting anything, or
+- wait out the window.
+
+Set `halt_window_seconds = 0` to disable the breaker (per-package blocking only).
+
+### LLM outage
+
+Each scan retries transient provider failures (rate limits, gateway errors,
+truncated or empty responses) up to 3 times before giving up. If the provider
+stays unreachable and `on_error = "block"`, the gate blocks the build and
+prints these options:
+
+- switch model/provider for one run: `WAURDEN_PROVIDER=… WAURDEN_MODEL=… WAURDEN_BASE_URL=… yay …`
+- switch permanently: `waurden configure`
+- go offline: `WAURDEN_SCAN_MODE=heuristics yay …` — no LLM call; wAURden's
+  built-in pattern checks stay active
+- weaken temporarily: `WAURDEN_ON_ERROR=warn yay …` — failed scans warn and
+  build anyway (a real LLM verdict still blocks)
 
 ## Maintainer warnings
 
