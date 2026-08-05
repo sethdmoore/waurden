@@ -960,7 +960,7 @@ func printBlockGuidance(pf PackageFiles, existing *DBRecord, v Verdict) {
 // Deliberately not interactive: under an AUR helper several gates run
 // concurrently, and simultaneous prompts would fight over one terminal.
 func printScanFailGuidance(cfg Config) {
-	fmt.Fprintf(os.Stderr, "\nwAURden: the scan could not complete (transient failures are retried %d times) —\n", scanAttempts)
+	fmt.Fprintf(os.Stderr, "\nwAURden: the scan could not complete (transient failures are retried %d times) —\n", scanRetries)
 	fmt.Fprintf(os.Stderr, "         %s may be down, rate-limiting, or misconfigured.\n", providerLabel(cfg))
 	fmt.Fprintf(os.Stderr, "         Your options (the build is blocked, nothing was executed):\n")
 	fmt.Fprintf(os.Stderr, "           try again later, or switch model/provider for one run:\n")

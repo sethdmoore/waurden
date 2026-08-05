@@ -1,4 +1,15 @@
-Latest session — **spec only, no code: run-coalescing forest gate** (new CLAUDE.md §10 section,
+Latest session — **retry budget 3 → 10 with tiered backoff** (user was rate-limited by OpenRouter
+on recompiles). New shared `scanRetries = 10` + `retryDelay(n)` (`provider.go`): retries 1–3 wait
+5s, 4–6 10s, 7–9 30s, 10 → 1m (~3¼ min total budget). Applies to both loops: `postJSON`'s in-place
+HTTP 429/5xx loop (was `maxAttempts=3`; `Retry-After` now *extends* a tier when longer, cap raised
+20s→60s, absent/unparseable header → 0 instead of the old 3s fallback) and `analyze()`'s outer
+transient/parse loop (`scanAttempts = 1 + scanRetries`, replacing the linear 2s·n backoff). New
+`httpRetrySleep` seam so tests don't sleep (`silenceRetrySleep` now silences both seams); new
+`TestRetryDelay` + `TestPostJSONRetryBudgetAndBackoff` (11 calls, per-retry sleep schedule,
+Retry-After extension); `TestRetryAfter` updated. README "LLM outage" section updated.
+`go test -race ./...` green.
+
+Prior session — **spec only, no code: run-coalescing forest gate** (new CLAUDE.md §10 section,
 "Run-coalescing forest gate — all N target trees up front"). Answers "can `yay -Syyu`'s 18 trees
 render up front?": one gate can't know its siblings (18 independent roots, no dep relationship),
 but under yay/paru's batched verify phase all N gates fire near-simultaneously as separate
@@ -14,7 +25,7 @@ Load-bearing assumption flagged for real-hardware verification first: all N gate
 simultaneously in the verify phase. Nothing implemented; HEAD still builds green
 (`go test ./...` re-verified this session).
 
-Prior session — **run-level trip-breaker ("stop yay in its tracks") + scan retries + block/outage
+Earlier session — **run-level trip-breaker ("stop yay in its tracks") + scan retries + block/outage
 guidance.** Diagnosed a real `yay -Syyu`: two packages "blocked" correctly but yay kept building the
 siblings (makepkg's exit only kills that one package's process; yay defers the error report), and the
 blocks themselves were spurious — HTTP 200 responses with blank/unparseable completions took the

@@ -14,8 +14,9 @@ import (
 // scanAttempts is how many times one scan will call the provider before giving
 // up and falling to on_error handling: the wire call and the verdict parse get
 // this shared budget (postJSON's internal Retry-After loop for 429/503 is
-// separate and per-call). 3 total attempts keeps a gate's worst case bounded.
-const scanAttempts = 3
+// separate and per-call). 1 initial attempt + scanRetries retries, paced by
+// retryDelay's tiers, keeps a gate's worst case bounded at ~3¼ minutes.
+const scanAttempts = 1 + scanRetries
 
 // scanRetrySleep is the between-attempt backoff, a seam so tests don't sleep.
 var scanRetrySleep = time.Sleep
@@ -693,7 +694,7 @@ func analyze(cfg Config, db *sql.DB, pf PackageFiles, force bool) (Verdict, erro
 	for attempt := 1; attempt <= scanAttempts; attempt++ {
 		if attempt > 1 {
 			fmt.Fprintf(os.Stderr, "wAURden: %s — scan attempt %d/%d…\n", pf.Name, attempt, scanAttempts)
-			scanRetrySleep(time.Duration(attempt-1) * 2 * time.Second)
+			scanRetrySleep(retryDelay(attempt - 1))
 		}
 		raw, usage, err := callProvider(cfg, systemPrompt, userContent)
 		if err == nil && usage.Total() > 0 {

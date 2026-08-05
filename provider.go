@@ -90,6 +90,33 @@ type transientError struct{ err error }
 func (e *transientError) Error() string { return e.err.Error() }
 func (e *transientError) Unwrap() error { return e.err }
 
+// scanRetries is how many times a failed attempt is retried before giving up:
+// analyze()'s outer loop (transport errors, blank completions, unparseable
+// verdicts) and postJSON's in-place HTTP status loop (429/5xx) each get this
+// budget. Deep enough to ride out a recompile-burst rate limit on a shared
+// endpoint (OpenRouter) instead of spuriously falling to on_error.
+const scanRetries = 10
+
+// retryDelay returns the tiered backoff before retry n (1-based):
+// retries 1-3 wait 5s, 4-6 wait 10s, 7-9 wait 30s, 10 (and beyond) 1m.
+// Full budget ≈ 3¼ minutes — patient under rate limiting, still bounded
+// so a build gate never stalls indefinitely.
+func retryDelay(n int) time.Duration {
+	switch {
+	case n <= 3:
+		return 5 * time.Second
+	case n <= 6:
+		return 10 * time.Second
+	case n <= 9:
+		return 30 * time.Second
+	default:
+		return 60 * time.Second
+	}
+}
+
+// httpRetrySleep is postJSON's between-attempt sleep, a seam so tests don't wait.
+var httpRetrySleep = time.Sleep
+
 func httpClient(cfg Config) *http.Client {
 	timeout := time.Duration(cfg.Timeout) * time.Second
 	if timeout == 0 {
@@ -107,11 +134,11 @@ func postJSON(client *http.Client, url string, headers map[string]string, body i
 	// Rate limits (429), temporary unavailability (503), and gateway flakes
 	// (500/502/504) are transient — common on free/shared endpoints like
 	// OpenRouter's :free models, and on Bedrock under concurrent gate bursts.
-	// Retry a few times, honoring the provider's Retry-After, before surfacing
-	// an error. Transport errors (timeout, reset, EOF mid-body) are returned as
+	// Retry with the tiered retryDelay backoff, letting the provider's
+	// Retry-After extend (never shorten below) a tier, before surfacing an
+	// error. Transport errors (timeout, reset, EOF mid-body) are returned as
 	// transientError so the caller's outer retry loop gets them instead — they
 	// need a fresh connection, not a Retry-After sleep.
-	const maxAttempts = 3
 	for attempt := 1; ; attempt++ {
 		req, err := http.NewRequest("POST", url, bytes.NewReader(data))
 		if err != nil {
@@ -133,11 +160,14 @@ func postJSON(client *http.Client, url string, headers map[string]string, body i
 		if resp.StatusCode < 400 {
 			return respBody, nil
 		}
-		if retryableStatus(resp.StatusCode) && attempt < maxAttempts {
-			wait := retryAfter(resp.Header.Get("Retry-After"))
+		if retryableStatus(resp.StatusCode) && attempt <= scanRetries {
+			wait := retryDelay(attempt)
+			if hdr := retryAfter(resp.Header.Get("Retry-After")); hdr > wait {
+				wait = hdr
+			}
 			fmt.Fprintf(os.Stderr, "wAURden: transient provider error (HTTP %d), retrying in %s (attempt %d/%d)\n",
-				resp.StatusCode, wait, attempt, maxAttempts)
-			time.Sleep(wait)
+				resp.StatusCode, wait, attempt, scanRetries+1)
+			httpRetrySleep(wait)
 			continue
 		}
 		return nil, httpError(resp.StatusCode, respBody)
@@ -155,11 +185,11 @@ func retryableStatus(code int) bool {
 	return false
 }
 
-// retryAfter derives a sleep duration from the Retry-After header, falling back
-// to a short default and capping the wait so a build gate never stalls for long.
+// retryAfter parses the Retry-After header so a provider can extend the tiered
+// retryDelay backoff, capped at the top tier so a build gate never stalls for
+// long. Absent, unparseable, or negative → 0 (the tier backoff applies alone).
 func retryAfter(header string) time.Duration {
-	const fallback = 3 * time.Second
-	const maxWait = 20 * time.Second
+	const maxWait = 60 * time.Second
 	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs >= 0 {
 		d := time.Duration(secs) * time.Second
 		if d > maxWait {
@@ -167,7 +197,7 @@ func retryAfter(header string) time.Duration {
 		}
 		return d
 	}
-	return fallback
+	return 0
 }
 
 // httpError condenses a provider error response to a single readable line,

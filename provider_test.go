@@ -64,10 +64,10 @@ func TestRetryAfter(t *testing.T) {
 	}{
 		{"0", 0},
 		{"5", 5 * time.Second},
-		{"999", 20 * time.Second},  // capped at maxWait
-		{"", 3 * time.Second},      // fallback
-		{"abc", 3 * time.Second},   // unparseable → fallback
-		{"-3", 3 * time.Second},    // negative → fallback
+		{"999", 60 * time.Second},  // capped at maxWait
+		{"", 0},                    // absent → tier backoff applies alone
+		{"abc", 0},                 // unparseable → tier backoff applies alone
+		{"-3", 0},                  // negative → tier backoff applies alone
 		{"  7  ", 7 * time.Second}, // trimmed
 	}
 	for _, tc := range cases {
@@ -149,12 +149,29 @@ func TestPostJSONSuccess(t *testing.T) {
 	}
 }
 
+func TestRetryDelay(t *testing.T) {
+	cases := []struct {
+		n    int
+		want time.Duration
+	}{
+		{1, 5 * time.Second}, {3, 5 * time.Second},
+		{4, 10 * time.Second}, {6, 10 * time.Second},
+		{7, 30 * time.Second}, {9, 30 * time.Second},
+		{10, 60 * time.Second}, {15, 60 * time.Second},
+	}
+	for _, tc := range cases {
+		if got := retryDelay(tc.n); got != tc.want {
+			t.Errorf("retryDelay(%d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
+}
+
 func TestPostJSONRetriesOn429(t *testing.T) {
+	silenceRetrySleep(t)
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			// Retry-After: 0 → retryAfter returns 0, so no real sleep in the test.
 			w.Header().Set("Retry-After", "0")
 			w.WriteHeader(429)
 			w.Write([]byte(`{"error":{"message":"slow down"}}`))
@@ -174,6 +191,45 @@ func TestPostJSONRetriesOn429(t *testing.T) {
 	}
 	if string(got) != `{"recovered":true}` {
 		t.Errorf("postJSON retry body = %s", got)
+	}
+}
+
+func TestPostJSONRetryBudgetAndBackoff(t *testing.T) {
+	var slept []time.Duration
+	old := httpRetrySleep
+	httpRetrySleep = func(d time.Duration) { slept = append(slept, d) }
+	t.Cleanup(func() { httpRetrySleep = old })
+
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 3 {
+			// A Retry-After longer than the 5s tier must extend the wait.
+			w.Header().Set("Retry-After", "45")
+		}
+		w.WriteHeader(429)
+		w.Write([]byte(`{"error":{"message":"slow down"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := postJSON(httpClient(Config{Timeout: 5}), srv.URL, nil, map[string]string{})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 429") {
+		t.Fatalf("exhausted retries should surface the 429, got %v", err)
+	}
+	if calls != scanRetries+1 {
+		t.Errorf("calls = %d, want %d (1 attempt + %d retries)", calls, scanRetries+1, scanRetries)
+	}
+	if len(slept) != scanRetries {
+		t.Fatalf("sleeps = %d, want %d", len(slept), scanRetries)
+	}
+	for i, d := range slept {
+		want := retryDelay(i + 1)
+		if i == 2 {
+			want = 45 * time.Second // Retry-After extended the 5s tier
+		}
+		if d != want {
+			t.Errorf("retry %d slept %v, want %v", i+1, d, want)
+		}
 	}
 }
 

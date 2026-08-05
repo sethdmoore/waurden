@@ -180,9 +180,12 @@ Set `halt_window_seconds = 0` to disable the breaker (per-package blocking only)
 ### LLM outage
 
 Each scan retries transient provider failures (rate limits, gateway errors,
-truncated or empty responses) up to 3 times before giving up. If the provider
-stays unreachable and `on_error = "block"`, the gate blocks the build and
-prints these options:
+truncated or empty responses) up to 10 times with a tiered backoff — retries
+1–3 wait 5s, 4–6 wait 10s, 7–9 wait 30s, 10 waits 1m (≈3¼ minutes total; a
+provider's `Retry-After` can extend a wait, capped at 1m) — deep enough to ride
+out the rate-limit burst a recompile of several packages triggers on shared
+endpoints. If the provider stays unreachable and `on_error = "block"`, the gate
+blocks the build and prints these options:
 
 - switch model/provider for one run: `WAURDEN_PROVIDER=… WAURDEN_MODEL=… WAURDEN_BASE_URL=… yay …`
 - switch permanently: `waurden configure`

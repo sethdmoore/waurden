@@ -292,12 +292,14 @@ func TestPostJSONTransportErrorIsTransient(t *testing.T) {
 	}
 }
 
-// silenceRetrySleep removes the between-attempt backoff for the duration of a test.
+// silenceRetrySleep removes the between-attempt backoffs (analyze's outer loop
+// and postJSON's HTTP status loop) for the duration of a test.
 func silenceRetrySleep(t *testing.T) {
 	t.Helper()
-	old := scanRetrySleep
+	oldScan, oldHTTP := scanRetrySleep, httpRetrySleep
 	scanRetrySleep = func(time.Duration) {}
-	t.Cleanup(func() { scanRetrySleep = old })
+	httpRetrySleep = func(time.Duration) {}
+	t.Cleanup(func() { scanRetrySleep, httpRetrySleep = oldScan, oldHTTP })
 }
 
 const verdictOKJSON = `{"verdict":"ok","confidence":0.9,"findings":[],"summary":"fine","source_analyzed":"pkgbuild-only"}`
