@@ -1,4 +1,20 @@
-Latest session — **run-level trip-breaker ("stop yay in its tracks") + scan retries + block/outage
+Latest session — **spec only, no code: run-coalescing forest gate** (new CLAUDE.md §10 section,
+"Run-coalescing forest gate — all N target trees up front"). Answers "can `yay -Syyu`'s 18 trees
+render up front?": one gate can't know its siblings (18 independent roots, no dep relationship),
+but under yay/paru's batched verify phase all N gates fire near-simultaneously as separate
+processes — so the spec adds cross-process coordination: leader election via
+`flock(LOCK_EX|LOCK_NB)` on `~/.cache/waurden/run.lock` (kernel-released on any death incl.
+`kill -9`, so liveness is unfakeable — never PID checks, never a blocking flock), registration in
+a new additive `run_roots` scratch table (TTL-swept), the existing DB/verdict-cache + halts as the
+results channel (no new results table), follower timeout → fallback to today's per-package path
+(leader death degrades UX, never security/availability), no takeover, leader-only render (also
+resolves the garbled-concurrent-render follow-up), `waurden resume` clears the scratch state as
+escape hatch. Rejected + recorded: `pacman -Qm`+RPC run-set prediction, repo-transaction trigger.
+Load-bearing assumption flagged for real-hardware verification first: all N gates alive
+simultaneously in the verify phase. Nothing implemented; HEAD still builds green
+(`go test ./...` re-verified this session).
+
+Prior session — **run-level trip-breaker ("stop yay in its tracks") + scan retries + block/outage
 guidance.** Diagnosed a real `yay -Syyu`: two packages "blocked" correctly but yay kept building the
 siblings (makepkg's exit only kills that one package's process; yay defers the error report), and the
 blocks themselves were spurious — HTTP 200 responses with blank/unparseable completions took the

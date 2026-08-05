@@ -857,3 +857,164 @@ main.go/gate.go  runGateCmd tree orchestration + aggregate exit code
    codes, and that makepkg-hook users get the tree while the pacman-hook recap is separate.
 
 Follow `MIGRATIONS.md` for the `last_scanned_commit` column. Update `SUMMARY.md` when landed.
+
+### Run-coalescing forest gate — all N target trees up front (NOT YET IMPLEMENTED — full spec)
+
+**One-line goal:** when a helper builds N independent AUR targets in one run (e.g. `yay -Syyu`
+upgrading 18 packages), the N concurrently-fired gate processes elect a **leader** that renders one
+combined **forest** (all 18 trees) and scans everything up front, while the sibling gates
+(**followers**) stay quiet and consume the shared results — before anything compiles.
+
+**Why one gate can't do this alone — and why it's possible anyway.** The tree scan walks the
+*dependency closure* from `$PWD`'s `.SRCINFO`; 18 upgrade targets are 18 independent roots with no
+dep relationship, so no gate can learn its siblings' names from its own package. But the root fact
+from the "Gate output" section cuts both ways: under yay/paru's **batched verify/download phase**,
+all N gates fire near-simultaneously as separate processes, before any build starts. The
+information for the full forest already exists across those N processes — only cross-process
+coordination is missing. This feature adds exactly that coordination and nothing else.
+
+#### Rejected alternatives (do not resurrect)
+
+- **Predicting the run set via `pacman -Qm` + AUR RPC + `vercmp`:** helper-agnostic, but a guess —
+  misses `--devel` bumps, includes `--ignore`d packages, and is flat wrong for `yay -S foo` (the
+  run is one package, not "everything outdated"); it would render — and spend LLM tokens on —
+  packages not in this run. Acceptable *later* as a user-invoked advisory `waurden preview`; never
+  as the gate mechanism.
+- **Triggering off the `-Syu` repo transaction via the pacman hook:** inherits the set-prediction
+  fuzziness, adds root-context problems (LLM keys/network from a root hook; the root→user DB
+  dance), and doesn't fire at all for `yay -S foo` or when the repo side has no targets (no
+  transaction → no hook).
+- **Parsing helper state** remains a hard non-goal (unchanged from the tree spec).
+
+#### Locked decisions (do not relitigate)
+
+- **The process model is the foundation:** gates are always **separate OS processes** — one
+  `waurden gate "$PWD"` per makepkg invocation via the makepkg.conf.d hook — never goroutines
+  across packages. Every coordination primitive below is chosen for that model.
+- **Leadership token = `flock(LOCK_EX|LOCK_NB)` on a lockfile** (`run_lock_path`, default
+  `~/.cache/waurden/run.lock`) — NOT a DB row, NOT a PID check. The kernel releases the lock on
+  *any* death of the holder (segfault, `kill -9`, OOM-kill), so liveness is unfakeable: a
+  successful acquire proves no live leader exists. Never use a *blocking* `flock` — followers must
+  **observe** leadership, not queue to inherit it; use the LOCK_NB-and-poll pattern. Do not add
+  PID-liveness heuristics (`kill(pid, 0)`, `/proc` checks) — racy against PID reuse and strictly
+  inferior to the kernel lock.
+- **Registration data lives in SQLite** — new additive table (per `MIGRATIONS.md`):
+  ```sql
+  CREATE TABLE IF NOT EXISTS run_roots (
+      pkgname    TEXT NOT NULL,
+      pkgbase    TEXT,
+      dir        TEXT NOT NULL,   -- the registering gate's on-disk $PWD
+      pid        INTEGER,         -- informational only; never used for liveness
+      started_at TEXT NOT NULL
+  );
+  ```
+  Scratch state with a TTL, not history — nothing in it survives a run on purpose.
+- **Authoritative-scan principle is untouched.** The leader pre-scans each registered root from its
+  **registered on-disk `dir`** (never a clone; children from clones as today). Every follower still
+  re-hashes and authoritatively gates its **own** `$PWD` when it proceeds: identical file → cache
+  hit (free); any divergence → cache miss → real scan. The forest is fail-fast + visibility, not a
+  new security guarantee.
+- **Results channel = the existing DB. No new results table.** The leader's scans write through the
+  normal per-node path (`storeVerdict`/`recordScan`/verdict cache); a follower learns its outcome
+  by polling `lookupRecord` for its own `(name, pf.Hash, engine)` cache hit. A block propagates
+  through the existing **halts** trip-breaker (`recordHalt` → the followers' `activeHalt` check) —
+  reuse it, don't fork it.
+- **Follower timeout → fall back to today's per-package path.** A follower waits at most
+  `run_follower_timeout_seconds` (default 120 — settle window + realistic LLM latency across a
+  forest); on timeout, or on observing leader death, it renders and scans exactly as the current
+  code does. **Leader death degrades UX (no forest), never security and never availability.**
+- **No leader takeover.** A follower whose periodic LOCK_NB probe suddenly *succeeds* has kernel
+  proof the leader died; it releases the lock, prints one line, and falls back per-package. A
+  second election path for a vanishingly rare crash is complexity without payoff.
+- **Coordination state self-heals; no manual unlock may ever be *required*.** Three layers:
+  (1) the flock token (kernel-released on death), (2) the follower timeout (above), (3) TTL sweep —
+  any gate at startup deletes `run_roots` rows older than the run window (same pattern as
+  `halt_window_seconds`); a stale row's worst case is one cosmetic extra forest line whose
+  clone-based scan cache-hits. `waurden resume` additionally clears `run_roots` and removes the
+  lockfile — the manual escape hatch for the bug not yet thought of; cheap insurance, never a
+  documented requirement.
+- **SQLite itself needs no unlock design — do not build one.** Its locks are kernel POSIX file
+  locks released on process death (including SIGKILL); a hot journal/WAL rolls back automatically
+  on the next open; transient contention is already absorbed by WAL + `db_busy_timeout_seconds`.
+  "Stuck DB after a crash" is not a real failure mode here.
+- **Only the leader renders.** Followers print nothing while waiting (at most one dim status line).
+  This also resolves the open follow-up about concurrent gates garbling the shared terminal — one
+  renderer, no interleaved cursor math. (The helper's own download output can still interleave, so
+  the plain renderer remains the safe choice under the gate — unchanged decision.)
+- **Degrades gracefully; helper-agnosticism stays true.** A sequential helper (or bare `makepkg`)
+  produces runs of one: the settle window finds no siblings and behavior is today's single-root
+  tree plus ~2s. No helper contract is assumed — the batching is opportunistic, never required.
+
+#### Flow
+
+```
+waurden gate $PWD  (each of the N processes):
+  1. collectFiles($PWD) → pf
+     (skip coalescing entirely if run_coalesce=false, tree_scan=false, or pf.Name=="unknown")
+  2. sweep expired run_roots rows; INSERT own (pkgname, pkgbase, dir, pid, started_at)
+  3. try flock(run_lock_path, LOCK_EX|LOCK_NB)
+     ├─ acquired → LEADER:
+     │    a. sleep run_settle_seconds        (let siblings register)
+     │    b. read run_roots (current window) → roots[]
+     │    c. resolveTree per root — each root from its REGISTERED on-disk dir, children from
+     │       clones as today; merge into one forest, pkgbase visited-set shared ACROSS roots
+     │       (a dep shared by two targets resolves and scans once)
+     │    d. render forest once (plain renderer); scan node-by-node through the existing
+     │       per-node path (heuristics / cache / ack / committer / recordScan / halts)
+     │    e. release lock; proceed with OWN package's normal gate decision + exit code
+     └─ not acquired → FOLLOWER (poll loop):
+          a. own lookupRecord cacheHit?  → proceed with own authoritative gate decision
+          b. activeHalt?                 → exit per existing halt behavior
+          c. LOCK_NB probe succeeds?     → leader died: release, fall back to today's path
+          d. run_follower_timeout_seconds elapsed? → fall back to today's path
+```
+
+Follower exit codes are still their own package's (`0/1/2` per verdict + `block_on`); a
+leader-discovered malicious node halts the run through the existing trip-breaker, which is what
+kills the siblings' builds — no new abort mechanism.
+
+#### Config knobs (env overrides per the existing `Config` precedent)
+
+```
+run_coalesce                 bool    // default true; false = every gate behaves exactly as today
+run_settle_seconds           int     // default 2; leader's wait for siblings to register (0 = none)
+run_follower_timeout_seconds int     // default 120; follower wait before per-package fallback
+run_lock_path                string  // default ~/.cache/waurden/run.lock (cache = reconstructible)
+```
+
+#### Verification prerequisites (before building the barrier)
+
+- **Confirm on real hardware that yay's verify phase fires all N gates up front** for a
+  multi-target run. The tree spec's ordering caveat establishes that the batched phase exists; the
+  N-at-once claim is the load-bearing assumption *here* and must be observed (e.g. N `waurden gate`
+  processes alive simultaneously during a real 3+-package upgrade) before investing in the barrier.
+  If a helper fires gates strictly sequentially, the feature reduces to runs of one — harmless, but
+  the forest value is gone.
+- `flock` needs a local filesystem — `~/.cache` qualifies. Note an NFS home dir as a known
+  limitation; do not engineer around it.
+
+#### Edge cases / non-goals
+
+- `scan` never coalesces — user-invoked, single target, wants its own render. `gate` only.
+- Same package re-gated across makepkg phases: the `recentlyAnnounced` quiet window already dedups
+  the announcements; a root registered in an *expired* run just becomes leader of a run of one.
+- Two genuinely concurrent runs (two terminals) collapse into one forest — acceptable: the union is
+  still exactly the set of packages actually being built, each still gated by its own process.
+- Crash economics, stated honestly: a dead leader turns N silent followers into N processes that
+  each wait up to the follower timeout before self-serving — slower and noisier, but correct. That
+  is the right failure direction for a security gate.
+- Non-goals: leader takeover; a persistent run history (`run_roots` is scratch); any coordination
+  between *threads* (the model is processes); predicting the helper's target list (see rejected
+  alternatives).
+
+#### Shipping order
+
+1. `run_roots` table + TTL sweep + `waurden resume` extension (additive, per `MIGRATIONS.md`).
+2. flock leader-election helper (LOCK_NB acquire/probe/release) — unit-test with two real
+   processes; the CLI integration harness already builds a subprocess binary.
+3. Follower wait loop (cacheHit / halt / lock-probe / timeout) + fallback to the current path.
+4. Leader path: settle → read roots → multi-root forest merge (shared visited-set) → forest render
+   → per-node scan loop. Keep the run-of-one case indistinguishable from today's tree.
+5. Real-hardware verification of the N-gates-up-front assumption; README framing: "full up-front
+   forest on helpers with a batched verify phase (yay/paru); per-package trees otherwise" — the
+   security guarantee stays universal either way.
