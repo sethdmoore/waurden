@@ -1,4 +1,28 @@
-Latest session — **retry budget 3 → 10 with tiered backoff** (user was rate-limited by OpenRouter
+Latest session — **false block on a printed cleanup hint (mullvad-vpn-bin).** A real `yay -S
+mullvad-vpn-bin` hard-blocked MALICIOUS 0.90 on four findings, only one of which actually blocks:
+the **high** persistence pattern matched `echo 'rm ~/.config/autostart/mullvad-vpn.desktop'` in the
+package's `post_remove` scriptlet — a manual cleanup hint *printed* for the user, not a write. (The
+other three, `chmod u+s` and two `systemctl enable`, are medium/advisory and contributed nothing;
+the upstream package is clean — both `.install` files were read from the AUR.) Both existing
+suppressors missed it: `benignPkgdirContext` only checks `strings.HasPrefix(line, "rm ")` and the
+line starts with `echo`, while `isDisplayedText` returns **true** here but its call site is gated on
+`severityRank < 3`, so the carve-out is withheld from exactly the tier that blocks. Fix: a new,
+much stricter `isLiteralPrint` (`analyze.go`) is allowed to suppress **high** (never critical) —
+`literalPrintSingleRe`/`literalPrintDoubleRe` require the *whole line* to be `echo`/`printf` plus one
+quoted literal running to end of line. Simply widening `isDisplayedText` to the block tier was
+rejected as unsafe: it accepts `tee` and only rejects `>`, so `echo 'x' | tee /etc/cron.d/y` and
+`echo "$(curl …|sh)"` would have gone from blocked to suppressed. The end-anchor is what makes it
+sound — no pipe, redirect, `;`/`&&` chain, or second word survives it; double quotes additionally
+exclude backslash (could escape the closing quote) and backtick, and reject `$(`, while allowing
+plain `$VAR`/`${VAR}` interpolation so `echo "rm $HOME/.config/autostart/x"` also qualifies.
+New inert sample `tests/samples/scriptlet-cleanup-hint/` (mirrors mullvad) + `TestIsLiteralPrint`
+(24 cases, weighted toward rejections that *start* with a printing command),
+`TestPrintedCleanupHintDoesNotBlock`, and `TestRealAutostartWriteStillBlocks` (five live-system
+writes that all begin with `echo`/`printf` and must still block) in `scriptlet_doc_test.go`.
+Verified against the real upstream files: no longer blocks, and the three legitimate medium findings
+still reach the LLM as `<heuristic_notes>`. `go test -race ./...` green; vet/gofmt clean.
+
+Prior session — **retry budget 3 → 10 with tiered backoff** (user was rate-limited by OpenRouter
 on recompiles). New shared `scanRetries = 10` + `retryDelay(n)` (`provider.go`): retries 1–3 wait
 5s, 4–6 10s, 7–9 30s, 10 → 1m (~3¼ min total budget). Applies to both loops: `postJSON`'s in-place
 HTTP 429/5xx loop (was `maxAttempts=3`; `Retry-After` now *extends* a tier when longer, cap raised
