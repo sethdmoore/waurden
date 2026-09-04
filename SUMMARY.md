@@ -1,4 +1,34 @@
-Latest session — **false block on a printed cleanup hint (mullvad-vpn-bin).** A real `yay -S
+Latest session — **spec only, no code: traur parity** (new CLAUDE.md §10 section, "traur parity —
+structural checks, submitter tracking, install-time veto"). Compared wAURden against
+[traur](https://github.com/Sohimaster/traur) (Rust, v0.4.1, ~240 regex patterns) by reading its
+source. Positioning facts recorded so they aren't relitigated: its ALPM hook is `PreTransaction`,
+i.e. it speaks only after makepkg has already run `build()`/`check()`, and there is no
+`makepkg.conf.d` hook in its tree or on its roadmap — our §4 gate remains the differentiator; it
+scans a *fresh AUR clone by name*, never the artifact or the build dir (violates our
+authoritative-scan principle); `traur allow` is a permanent **by-name** whitelist (the Atomic Arch
+shape we explicitly rejected); its diff window is `HEAD~1..HEAD` only; it has no persistent state;
+and it does **no comment stripping** in front of 47 hard-blocking `override_gate` patterns, so a
+commented-out `curl … | sh` is an instant MALICIOUS. Do not port `patterns.toml`.
+
+Adopted (all unimplemented): **(A)** checksum analysis — no sums / all-`SKIP` / weak-only, at
+**medium**, VCS-exempt — and **(B)** `-bin` source verification (`url=` domain+org vs `source=()`),
+both as pure local `Finding`s in a new `structure.go` behind `heuristicCheck`, reading the local
+PKGBUILD rather than the RPC; **(C)** submitter tracking — `Submitter` is immutable, so it avoids
+the FP class that killed our old maintainer-change warning; loud only when combined with an
+established package plus a first-time committer from our existing `known_committers` baseline; and
+**(D)** maintainer batch-upload (≥3 packages in 48h — the Atomic Arch fingerprint) via
+`search?by=maintainer`. C and D stay **advisory stderr only**: the verdict cache is keyed on
+`pkgbuild_hash`, so AUR metadata must never enter a stored `Verdict` or a cache hit would freeze a
+stale signal. Also corrects our own `hooks/pacman/waurden.hook`, which runs `summary --targets` with
+no `AbortOnFail` and so enforces nothing — specs a DB-backed veto over that same hook plus an
+`install_gate` knob (`off`/`warn`/`block`, default `warn`), and records why extracting `.INSTALL`
+from the `.pkg.tar.zst` is unreachable from a `PreTransaction` hook. Rejected with reasons:
+votes/popularity/stars/comments as scored signals, the hard-coded typosquat list, their
+weighted-score model, and `/dev/tty` prompting from the gate. Nothing implemented; `go test ./...`
+re-verified green this session. Same commit range also landed the previously uncommitted
+fakeroot-phase `HOME`-export diagnosis from the prior session.
+
+Prior session — **false block on a printed cleanup hint (mullvad-vpn-bin).** A real `yay -S
 mullvad-vpn-bin` hard-blocked MALICIOUS 0.90 on four findings, only one of which actually blocks:
 the **high** persistence pattern matched `echo 'rm ~/.config/autostart/mullvad-vpn.desktop'` in the
 package's `post_remove` scriptlet — a manual cleanup hint *printed* for the user, not a write. (The
