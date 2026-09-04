@@ -50,6 +50,46 @@
   pinned by `TestExtractPkgname` (case `array-multi-not-split`) in `collect_test.go`, which
   documents the bug rather than the desired behavior — update that assertion when you fix it.
 
+- **Fakeroot-phase gate false-blocks when the PKGBUILD exports `HOME` (hook + config.go:76) —
+  DIAGNOSED 2026-08-17, root-caused and repro'd; fix designed below, not yet applied.**
+  Real failure: `yay -S syncthingtray-qt6` compiled and passed its whole test suite, then died at
+  `==> Entering fakeroot environment...` with the `REFUSING TO RUN — NOT CONFIGURED` box, even
+  though `~/.config/waurden/config.toml` existed (mode 600, untouched since June). Chain of
+  causes, each step verified on this machine:
+  1. makepkg runs `prepare()`/`build()`/`check()` in its **main shell process**, not a subshell
+     (`run_function`, makepkg:409 — only `pkgver()` is subshelled). An `export` inside those
+     functions persists in makepkg's own environment.
+  2. syncthingtray-qt6's `check()` does `export HOME="$(mktemp -p "$PWD" -d testhome.XXX)"`
+     (upstream workaround for syncthing/syncthing#8785 — its test daemon writes into `$HOME`).
+     Any PKGBUILD that exports `HOME` for its test/build sandbox triggers the same class.
+  3. `enter_fakeroot` (makepkg:185) re-execs `fakeroot -- bash makepkg -F`; the child **inherits
+     the mutated `HOME`**, re-sources `/etc/makepkg.conf.d/*.conf`, and our hook fires
+     `waurden gate` one last time — now with `HOME=…/src/…/testhome.XXX`.
+  4. `loadConfig` resolves the user config via `os.UserHomeDir()` (= `$HOME`, config.go:76) →
+     `testhome.XXX/.config/waurden/config.toml` is ENOENT, `/etc/waurden/config.toml` absent →
+     `exitUnconfigured` → exit 1 → the hook kills the build at the very last phase, after ~10
+     minutes of compile. Fail-closed, but a false block with a misleading message.
+  Repro (byte-identical box): trivial PKGBUILD whose `check()` contains that `export HOME=…`
+  line, built with the hook installed — the initial gate passes, the fakeroot gate refuses.
+  Control: the same harness without the export builds clean, and a saved Jul 19 plex log shows
+  the fakeroot-phase gate passing normally — the delta is the PKGBUILD's `HOME` export, not
+  fakeroot itself (fakeroot preserves env; libfakeroot's LD_PRELOAD can't even intercept a Go
+  binary's raw syscalls). Note: even when `/etc/waurden/config.toml` *does* exist, the poisoned
+  `HOME` still computes the default `db_path`/`clone_dir` from the fake home → fresh empty DB
+  inside the build tree → spurious re-scan and litter. **Fix (verified against the repro): add
+  `[ -z "$FAKEROOTKEY" ]` to the hook condition** in `hooks/makepkg.conf.d/00-waurden.conf` and
+  the `makepkgHook` const (main.go:19) — fakeroot exports `FAKEROOTKEY`, so this skips exactly
+  the `-F` re-exec. This loses nothing: by `package()` time, `build()`/`check()` have already
+  executed arbitrary code, and the fakeroot gate's entire environment (hence which config/DB it
+  reads) is controllable by that same code — it is the one gate invocation with **zero**
+  protective value (the wall is each makepkg invocation's *initial* gate, which fires before the
+  PKGBUILD is sourced, in a fresh clean-env process). `hookStatus`'s sha256 comparison will flag
+  the changed hook so `sudo waurden install-hooks` re-installs it. Update the "4 gate phases"
+  framing in SUMMARY/quiet-window notes to 3 when landing. Rejected alternative: a Go-side
+  passwd fallback (`user.Current()` when `$HOME` has no config) — it would work (raw-syscall
+  getuid is fakeroot-proof) but second-guesses legitimate `HOME` overrides and keeps a
+  valueless gate alive; the one-line hook guard is exact.
+
 ---
 
 ## 1. Problem & motivation
