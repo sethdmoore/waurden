@@ -1058,3 +1058,181 @@ run_lock_path                string  // default ~/.cache/waurden/run.lock (cache
 5. Real-hardware verification of the N-gates-up-front assumption; README framing: "full up-front
    forest on helpers with a batched verify phase (yay/paru); per-package trees otherwise" — the
    security guarantee stays universal either way.
+
+### traur parity — structural checks, submitter tracking, install-time veto (NOT YET IMPLEMENTED — full spec)
+
+**Origin.** [traur](https://github.com/Sohimaster/traur) (Rust, v0.4.1, ~240 regex patterns) is a
+prior-art AUR trust scorer found 2026-09-04. Its source was read in full and compared against
+wAURden. This section records the four checks worth adopting, the ones deliberately *not* adopted,
+and the correction to our own pacman hook that the comparison surfaced. Read the "positioning"
+subsection before assuming traur is ahead of us anywhere — on interception timing it is not.
+
+#### Positioning (facts established by reading their source; do not relitigate)
+
+- **traur has no build-time interception and none planned.** Its only hook is
+  `hook/traur.hook`: `When = PreTransaction`, `Operation = Install|Upgrade`, `AbortOnFail`. For an
+  AUR package that transaction is the `pacman -U` the helper runs *after* `makepkg` has already
+  executed `prepare()`/`build()`/`check()`/`package()`. There is no `makepkg.conf.d` file anywhere
+  in their tree and their ROADMAP has no entry for one. Our `makepkg.conf.d` gate (§4) remains the
+  differentiator; do not describe traur's ALPM hook as equivalent protection.
+- **traur scans a fresh AUR clone, never the artifact.** `traur-hook` receives package *names*
+  (`NeedsTargets`), and `coordinator::build_context` → `aur_git::ensure_repo` clones
+  `https://aur.archlinux.org/<pkgbase>.git` into `~/.cache/traur/git/` and analyses that text. It
+  never reads the `.pkg.tar.zst` being installed nor the build dir that produced it — so a local
+  edit, a pinned ref, a poisoned build tree, or a push landing between clone and install all evade
+  it. (Their `git pull --ff-only` failure is also swallowed via `let _ = …`, so a stale cached clone
+  is scanned silently.) This is precisely the failure our **authoritative-scan principle** forbids;
+  any parity work below must keep reading the on-disk `$PWD`.
+- **`traur allow <package>` is a permanent by-name whitelist** (`config.whitelist.packages:
+  Vec<String>`, exact-string match). Since their MALICIOUS tier *requires* whitelisting to proceed,
+  every override-gate false positive pushes a user into blanket-immunising all future versions of
+  that package — the Atomic Arch shape exactly. Our hash-pinned `acknowledged_hash` stays; do not
+  add a by-name allowlist for parity.
+- **Their diff window is `HEAD~1..HEAD` only** (`aur_git::get_latest_diff`), so a two-commit push or
+  a five-commit gap since your last scan hides the malicious hunk from their `T-DIFF-*` signals. Our
+  `last_scanned_commit` design (dep-tree section, step 5) is strictly better — ship it.
+- **They have no persistent state.** `cache.rs` is a git-clone directory; there is no DB. No scan
+  history, no cross-run committer baseline (their `T-AUTHOR-CHANGE` sees only the last 20 in-clone
+  commits), no verdict cache, no migrations.
+- **Their pattern set is broader and less precise than ours.** 239 patterns, 47 `override_gate =
+  true` (instant MALICIOUS). `grep` for comment stripping across their `src/` returns nothing:
+  `PkgbuildAnalysis::analyze` runs every regex over raw content, so a commented-out
+  `# … curl x.sh | sh` fires `P-CURL-PIPE` (90, override gate) → hard block → whitelist required.
+  There is no equivalent of `benignPkgdirContext` / `isDisplayedText` / `isLiteralPrint`, and many
+  entries are single-token greps (`P-XDG-AUTOSTART` = `\.config/autostart`, `P-HTTP-SOURCE` =
+  `http://[^$\s]`, `G-FIND-EXEC`, `G-CMAKE-EXEC`, `G-SED-EXEC`). **Do not port `patterns.toml`
+  wholesale.** Their weighted score (Metadata .15 / Pkgbuild .45 / Behavioral .25 / Temporal .15,
+  each category capped at 100) dilutes medium-tier noise the same way our severity tiering does —
+  a design convergence, not a gap. Individual entries may be cherry-picked later, but only at our
+  **medium** tier and only behind the existing suppressors.
+
+#### What to adopt — and where it enters the pipeline
+
+Two of the four are pure/local and belong in the heuristic engine; two are network metadata and must
+stay out of it. The split is load-bearing:
+
+> **The verdict cache is keyed on `pkgbuild_hash` (+ provider), so AUR metadata must never become
+> part of a stored `Verdict`.** Votes, maintainer, and submitter change independently of the
+> PKGBUILD; folding them into findings would freeze a stale signal into the cache on a hit, or miss
+> one that appeared after the last scan. Metadata signals stay where `printAURWarnings` already
+> lives — recomputed every invocation, advisory, never blocking, never cached.
+
+**A. Checksum analysis (local — new `structure.go`, called from `heuristicCheck`).**
+The highest value-per-line item, and we have zero checksum logic today. Emit `Finding`s (not stderr)
+so they flow through the existing tier machinery, reach the LLM as `<heuristic_notes>`, and get
+stored via `mergeFindings`:
+- no `*sums` array present at all,
+- every entry is `SKIP`,
+- only `md5sums`/`sha1sums` with no strong array alongside.
+All three are **medium** (advisory) — each is individually legitimate in real packaging. Exempt VCS
+packages (`pf.Name` or pkgbase ending `-git`/`-svn`/`-hg`/`-bzr`), which have no meaningful sums.
+Handle the `_x86_64`/arch-suffixed array forms (`sha256sums_x86_64=(…)`).
+**The blocking combination is in the diff, not the file:** checksums removed *and* a `source=()`
+URL changed in the same commit is the classic source-swap. Wire that as a **high** finding once
+`last_scanned_commit` diffs land (dep-tree section, step 5) — it is worth a block, whereas a bare
+`SKIP` is not. Note the sums may be shell-expanded (`${_commit}`); do not attempt evaluation, just
+report what is literally present.
+
+**B. `-bin` source verification (local — `structure.go`).**
+For a package whose name ends `-bin`: compare the domain (and, for GitHub, the org) of the PKGBUILD's
+own `url=` against every `https?://` entry in `source=()`. A mismatch is the CHAOS-RAT
+browser-impersonation shape — the package claims one upstream and downloads the payload from
+somewhere else. **Read `url=` from the local PKGBUILD/`.SRCINFO`, not from the AUR RPC `URL` field**
+(traur uses the RPC; the local value is the same data, keeps this check pure and network-free, and
+honours the authoritative-scan principle). Org mismatch on the same host → **high**; different host
+entirely → **medium** (CDN/release-mirror splits are common and legitimate — `github.com` upstream
+with a `githubusercontent.com`/`objects.githubusercontent.com` source is normal). Skip entries that
+still contain unexpanded `${…}` after our existing `expandShellVars` pass rather than guessing.
+
+**C. Submitter ≠ maintainer + orphan takeover (network — extend `aur.go`).**
+The AUR RPC v5 `info` response carries `Submitter` alongside `Maintainer` (verified live against
+`https://aur.archlinux.org/rpc/v5/info?arg[]=yay` → `"Submitter":"jguer"`). `Submitter` is
+immutable, which is exactly why this succeeds where our removed maintainer-change warning failed:
+a co-maintainer temporarily holding the primary slot does not change the submitter, so the FP class
+that killed warning 2 (see "AUR maintainer / orphan warnings") does not apply here.
+- Add `Submitter *string` and `FirstSubmitted int64` to the `fetchAURInfo` RPC struct and to
+  `AURInfo`.
+- `Submitter != Maintainer` alone → informational stderr line only. It is common and benign
+  (legitimate hand-offs happen constantly); on its own it must not raise alarm.
+- `Submitter != Maintainer` **AND** the package is established (`FirstSubmitted` > 90 days ago)
+  **AND** `trackNewCommitters` reports a first-time committer email this run → the loud
+  orphan-takeover warning. This is the acroread vector and the one combination worth shouting
+  about. It reuses the committer baseline we already persist in `known_committers`, which is
+  strictly better than traur's 20-commit in-clone window.
+- Advisory only — **does not affect the verdict or the exit code.** Revisit the escalation question
+  already parked under "Git committer tracking" only after this has proven itself in practice.
+
+**D. Maintainer batch-upload (network — `aur.go`).**
+`GET https://aur.archlinux.org/rpc/v5/search/<maintainer>?by=maintainer` returns every package for
+that maintainer with `FirstSubmitted` (verified live). Count how many were first submitted within
+the last 48h; ≥3 → warn. This is the Atomic Arch fingerprint (mass claiming of orphans) and we do
+not look for it today. One extra RPC call, made only when a maintainer exists, non-fatal on failure
+like every other AUR lookup, and subject to the same "retry once then fail silently" plan in the
+AUR-resilience note. Advisory only. Consider caching the per-maintainer result in-process so a
+forest scan sharing one maintainer across nodes queries once.
+
+#### Deliberately NOT adopted (record the reasoning; do not resurrect without new evidence)
+
+- **Votes / popularity / out-of-date / missing-URL / missing-license / GitHub stars / AUR comments**
+  (`metadata_analysis`, `github_stars`, `aur_comments_analysis`). These are popularity proxies: a
+  brand-new legitimate package and a brand-new malicious one are indistinguishable on every one of
+  them, and scoring them punishes niche packages for being niche. If ever added, they belong as
+  *advisory LLM context*, never as blocking signals. GitHub stars additionally introduces a
+  rate-limited third-party API dependency for a signal an attacker can buy.
+- **Typosquatting / brand impersonation** (`name_analysis`). The idea is sound but the
+  implementation is a hard-coded ~28-brand list plus a suffix list, i.e. a curation burden with a
+  long tail we would have to own indefinitely. Defer until there is a maintained data source.
+- **Porting `patterns.toml`.** See positioning above. Cherry-picking the GTFOBins reverse-shell and
+  interpreter-pipe families (`G-REVSHELL-*`, `G-PIPE-*`) is defensible later — they cover
+  interpreters our set does not enumerate — but only at **medium** and behind our suppressors.
+- **Their weighted-score model.** Our severity tiering already achieves the FP tolerance it buys;
+  swapping scoring models would invalidate every cached verdict and every test expectation for no
+  security gain.
+- **Prompting from inside the hook via `/dev/tty`.** `traur-hook` opens `/dev/tty` read-write for
+  all I/O because pacman buffers hook stdout/stderr — a genuinely useful trick, and it would make
+  interactive override reachable from our makepkg gate too. It nevertheless collides with the
+  locked "no interactive prompts in the gate's failure paths" decision (concurrent sibling gates
+  share one terminal). Keep `waurden allow` as the escape hatch. Reconsider only *after* the
+  run-coalescing forest gate lands, since leader-only rendering would make a single prompt safe.
+
+#### Correction to our own pacman hook — install-time veto
+
+The comparison surfaced a real gap on our side. `hooks/pacman/waurden.hook` currently runs
+`waurden summary --targets` with **no `AbortOnFail`** — it is purely informational, so wAURden has
+no install-time enforcement at all. That leaves: a package built while the makepkg hook was absent
+or wAURden was disabled, and a `pacman -U` of a prebuilt artifact.
+
+**Do not fix this by copying traur.** Scanning a fresh AUR clone at install time validates text that
+is not the artifact being installed (see positioning). The sound fix uses state we already have:
+
+- Extend the existing `summary --targets` path (same hook, same `NeedsTargets` stdin, same
+  `$SUDO_USER` DB resolution) into a veto: for each target, `lookupRecord`; if its stored verdict is
+  in `block_on` and `acknowledged_hash` does not match the stored `pkgbuild_hash`, abort.
+- Add `AbortOnFail` to the hook and a non-zero exit on that condition. Update the `[Action]
+  Description`.
+- New config knob `install_gate` (`off` | `warn` | `block`, default `warn`) governing the *other*
+  case — an AUR target (`pacman -Qm`-style, i.e. not in any sync repo) with **no DB row at all**,
+  meaning it was never gated. Default `warn` because aborting there would break the first upgrade
+  after installing wAURden; `block` is available for strict users. Repo-only transactions stay
+  silent exactly as today (no DB rows, no AUR targets → print nothing).
+- `install-hooks` / `hookStatus` sha256 must learn the new hook content so an upgrade re-installs
+  it (same requirement noted for the summary hook).
+- **Do not attempt to extract `.INSTALL` from the `.pkg.tar.zst`.** It would be strictly better than
+  traur's approach, but a `PreTransaction`/`Type = Package` hook receives package *names*, not
+  archive paths, and `Type = File` triggers match payload paths rather than the archive — there is
+  no reliable way to resolve the artifact. Record this as a known limitation; the makepkg gate
+  already reads `.install` files as helper files at build time, which is the case that matters.
+
+#### Shipping order
+
+1. **A** checksum analysis (`structure.go` + `heuristicCheck` wiring). Pure, local, no network —
+   unit-test against real sample PKGBUILDs in `tests/samples/` per rule 4.
+2. **B** `-bin` source verification (same file, same pipeline). Needs a benign `-bin` sample with a
+   `githubusercontent.com` source to pin the no-false-positive case.
+3. **The pacman-hook veto** (DB-backed, `AbortOnFail`, `install_gate` knob) — self-contained and
+   independent of A/B; exercise via `cli_integration_test.go`'s subprocess harness.
+4. **C** submitter/orphan-takeover, then **D** batch-upload (`aur.go`; `httptest`-backed tests, no
+   live AUR in the suite — reuse the `aurRPCInfoURL` seam and add one for the maintainer search).
+5. The checksums-removed-in-diff **high** finding, once `last_scanned_commit` diffs exist.
+6. README + `config.example.toml`: the `install_gate` knob, the new advisory warnings, and an honest
+   note that the install-time veto is a backstop for un-gated packages, not a second scanner.
